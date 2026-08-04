@@ -1,19 +1,98 @@
-# SMG Joyas
+# SMG Joyería — Catálogo Mayorista
 
-Tienda Node.js preparada para Vercel. Los productos y pedidos se guardan en PostgreSQL; las fotos actuales se sirven como archivos estáticos del proyecto.
+Catálogo web con carrito, pedidos por WhatsApp y panel admin.
 
-## Configuración
+## Stack
 
-1. Creá una base PostgreSQL, por ejemplo con la integración Neon de Vercel, y copiá su cadena de conexión.
-2. En el panel de Vercel agregá las variables de entorno `DATABASE_URL` y `ADMIN_KEY`. La clave inicial del panel es `123456`; cambiala antes de publicar una tienda real.
-3. Ejecutá el contenido de [`db/schema.sql`](db/schema.sql) en la consola SQL de tu base.
-4. En tu computadora, instalá dependencias con `npm install`, definí las mismas variables en `.env.local` y ejecutá `npm run db:seed`. El script importa los códigos y precios de `precios.xlsx`.
-5. Publicá el proyecto en Vercel. La tienda usará `api/products` y el panel interno estará en `/admin.html`.
+- **PostgreSQL** — datos de productos y pedidos
+- **Fastify (Node.js)** — API REST
+- **Next.js** — frontend del catálogo y admin
+- **Docker Compose** — entorno de desarrollo
 
-## Uso diario
+## Levantar con Docker
 
-- Para actualizar los precios desde el Excel: reemplazá `precios.xlsx` y ejecutá `npm run db:seed`.
-- Para altas, bajas o cambios manuales: abrí `/admin.html`, ingresá `ADMIN_KEY` y administrá el catálogo. La baja es lógica: oculta el producto, sin borrar ventas anteriores.
-- El ABM acepta una URL de imagen. Para fotos nuevas subilas primero a una URL pública; Vercel no permite guardar archivos subidos en su sistema de archivos durante la ejecución.
+```bash
+cp .env.example .env
+docker compose up --build
+```
 
-Cada pedido registra nombre del cliente, productos, cantidad, precio vendido, descuento y total antes de abrir WhatsApp.
+Servicios:
+
+| Servicio | URL |
+|----------|-----|
+| Catálogo | http://localhost:3000 |
+| API | http://localhost:4000 |
+| PostgreSQL | localhost:5432 |
+
+Admin: http://localhost:3000/admin (contraseña por defecto `admin123`)
+
+Al iniciar, la API importa automáticamente `precios.xlsx` si la base está vacía.
+
+## Flujo de pedidos
+
+1. El cliente arma el carrito (máx. **50 unidades por producto**).
+2. Ingresa su **nombre** antes de confirmar.
+3. Se guarda el pedido en la base y se abre WhatsApp con el detalle.
+4. En **Admin → Pedidos**, al marcar **Entregado** se descuenta el stock.
+
+Los precios visibles en el catálogo son **mayoristas**.
+
+## Desarrollo local (sin Docker)
+
+```bash
+# Base de datos
+docker compose up db -d
+
+# API
+cd backend && npm install
+DATABASE_URL=postgres://smg:smg_dev@localhost:5432/smgjoyeria npm run seed
+DATABASE_URL=postgres://smg:smg_dev@localhost:5432/smgjoyeria npm run dev
+
+# Frontend (otra terminal)
+cd frontend && npm install
+NEXT_PUBLIC_API_URL=http://localhost:4000 npm run dev
+```
+
+## Publicar gratis (Vercel + Koyeb + Neon)
+
+Stack recomendado para producción sin costo: **Vercel** (frontend), **Koyeb**
+(API) y **Neon** (PostgreSQL). Las imágenes y el Excel ya viajan dentro de la
+imagen Docker del backend (no dependen de volúmenes).
+
+1. **Neon** → crear proyecto, copiar `DATABASE_URL`, ejecutar `db/init.sql` en
+   la consola SQL y, una vez desplegada la API, dejar que el seed importe
+   `precios.xlsx` (o usar Admin → Importar desde Excel).
+
+2. **Koyeb** → crear una app con `backend/Dockerfile` desde el repo y setear:
+   - `DATABASE_URL`
+   - `ADMIN_PASSWORD` y `JWT_SECRET`
+   - `CORS_ORIGIN` = URL del frontend en Vercel (ej. `https://smgjoyeria.vercel.app`)
+
+   La instancia gratuita se duerme tras 1 h sin visitas y despierta en 1–5 s.
+
+3. **Vercel** → importar el repo, directorio raíz `frontend/`, build por
+defecto de Next.js, y setear:
+   - `NEXT_PUBLIC_API_URL` = URL de la API en Koyeb
+   - `API_URL` = misma URL (para el SSR)
+   - `NEXT_PUBLIC_WHATSAPP_NUMBER` = número WhatsApp
+
+   El catálogo se recarga desde el navegador si la API estaba dormida.
+
+## Estructura
+
+```
+backend/          API Fastify
+frontend/         Next.js (catálogo + admin)
+db/init.sql       Schema PostgreSQL
+products-assets/  Imágenes de productos
+precios.xlsx      Fuente de datos inicial
+```
+
+## Variables de entorno
+
+| Variable | Descripción |
+|----------|-------------|
+| `ADMIN_PASSWORD` | Contraseña del panel admin |
+| `JWT_SECRET` | Secreto para tokens admin |
+| `NEXT_PUBLIC_API_URL` | URL de la API |
+| `NEXT_PUBLIC_WHATSAPP_NUMBER` | Número WhatsApp (sin + ni espacios) |
