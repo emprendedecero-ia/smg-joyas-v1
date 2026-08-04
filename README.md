@@ -51,28 +51,29 @@ DATABASE_URL=postgres://smg:smg_dev@localhost:5432/smgjoyeria npm run dev
 # Frontend (otra terminal)
 cd frontend && npm install
 NEXT_PUBLIC_API_URL=http://localhost:4000 npm run dev
-```
+```## Publicar gratis (Vercel + Render + Neon)
 
-## Publicar gratis (Vercel + Koyeb + Neon)
-
-Stack recomendado para producción sin costo: **Vercel** (frontend), **Koyeb**
+Stack recomendado para producción sin costo: **Vercel** (frontend), **Render**
 (API) y **Neon** (PostgreSQL). Las imágenes y el Excel ya viajan dentro de la
 imagen Docker del backend (no dependen de volúmenes).
 
-1. **Neon** → crear proyecto, copiar `DATABASE_URL`, ejecutar `db/init.sql` en
-   la consola SQL y, una vez desplegada la API, dejar que el seed importe
-   `precios.xlsx` (o usar Admin → Importar desde Excel).
+1. **Neon** → crear proyecto, copiar `DATABASE_URL`, ejecutar `db/init.sql` en la
+   consola SQL y dejar que el seed importe `precios.xlsx` (o usar
+   Admin → Importar desde Excel).
 
-2. **Koyeb** → crear una app con `backend/Dockerfile` desde el repo y setear:
+2. **Render** → New Web Service → conectar GitHub y elegir el repo. Render
+   detecta el `Dockerfile` de la raíz. Setear las variables:
    - `DATABASE_URL`
    - `ADMIN_PASSWORD` y `JWT_SECRET`
    - `CORS_ORIGIN` = URL del frontend en Vercel (ej. `https://smgjoyeria.vercel.app`)
 
-   La instancia gratuita se duerme tras 1 h sin visitas y despierta en 1–5 s.
+   Render pasa `PORT` automáticamente. El plan gratis duerme el servicio tras
+   15 min sin visitas y lo despierta en ~1 min; se puede mantener despierto con
+   un monitor de uptime gratuito (UptimeRobot) que lo pingee cada 5 min.
 
 3. **Vercel** → importar el repo, directorio raíz `frontend/`, build por
 defecto de Next.js, y setear:
-   - `NEXT_PUBLIC_API_URL` = URL de la API en Koyeb
+   - `NEXT_PUBLIC_API_URL` = URL de la API en Render
    - `API_URL` = misma URL (para el SSR)
    - `NEXT_PUBLIC_WHATSAPP_NUMBER` = número WhatsApp
 

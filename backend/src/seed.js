@@ -84,15 +84,18 @@ export function parseProductsFromExcel(excelPath, assetsDir) {
 }
 
 export async function seedDatabase() {
-  const excelPath = resolveExcelPath();
-  const assetsDir = resolveAssetsDir();
-  const products = parseProductsFromExcel(excelPath, assetsDir);
-
+  // Si la base ya tiene productos, no hace falta el Excel: el seed se omite
+  // sin exigir que precios.xlsx exista (relevante en deploys donde el archivo
+  // no viajó con la imagen o se actualizó la base en otro entorno).
   const { rows: existing } = await query('SELECT COUNT(*)::int AS count FROM products');
   if (existing[0].count > 0) {
     console.log(`Seed omitido: ya hay ${existing[0].count} productos en la base.`);
     return;
   }
+
+  const excelPath = resolveExcelPath();
+  const assetsDir = resolveAssetsDir();
+  const products = parseProductsFromExcel(excelPath, assetsDir);
 
   console.log(`Importando ${products.length} productos desde ${excelPath}...`);
 
