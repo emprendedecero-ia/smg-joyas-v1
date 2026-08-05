@@ -55,8 +55,9 @@ export function invoiceUrl(orderId) {
   return `${getApiBase()}/api/orders/${orderId}/invoice`;
 }
 
-export function buildWhatsAppUrl(order, customerName) {
-  const number = process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || "5491126151141";
+export function buildWhatsAppUrl(order, customerName, number) {
+  // Si no se pasa un número (p.ej. reenvío admin), se usa el de la empresa.
+  const dest = number || process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || "5491126151141";
   const lines = [
     `*Pedido SMG Joyería*`,
     `Cliente: ${customerName}`,
@@ -78,5 +79,5 @@ export function buildWhatsAppUrl(order, customerName) {
     lines.push("", `📝 ${order.notes}`);
   }
 
-  return `https://wa.me/${number}?text=${encodeURIComponent(lines.join("\n"))}`;
+  return `https://wa.me/${dest}?text=${encodeURIComponent(lines.join("\n"))}`;
 }

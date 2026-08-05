@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { fetchJson, formatMoney, invoiceUrl, MAX_QTY } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { buildWhatsAppUrl, fetchJson, formatMoney, invoiceUrl, MAX_QTY } from "@/lib/api";
 
 const TOKEN_KEY = "smg-admin-token";
 
@@ -178,12 +178,25 @@ function ProductsPanel() {
   const clearDirty = () => setDirty(new Set());
 
   const importExcel = async () => {
+    // Reemplaza el catálogo con el Excel vigente (bijou.xlsx): reactiva los
+    // productos del archivo y desactiva los que ya no figuren.
+    if (
+      !window.confirm(
+        "¿Reemplazar el catálogo con el Excel (bijou.xlsx)? Se actualizan todos los productos del archivo (descripción, precios, stock y activación) y se desactivan los que ya no estén. El historial de pedidos no se toca."
+      )
+    ) {
+      return;
+    }
     setImporting(true);
     setError("");
     setMessage("");
     try {
       const result = await authFetch("/api/admin/import-excel", { method: "POST" });
-      setMessage(`Excel importado: ${result.imported} productos actualizados.`);
+      const parts = [`${result.imported} productos actualizados`];
+      if (result.deactivated > 0) {
+        parts.push(`${result.deactivated} desactivados`);
+      }
+      setMessage(`Catálogo reemplazado (${result.excel || "excel"}): ${parts.join(", ")}.`);
       clearDirty();
       await load();
     } catch (err) {
@@ -212,6 +225,8 @@ function ProductsPanel() {
             description: product.description,
             stock: Number(product.stock),
             stockCasa: Number(product.stockCasa),
+            // Costo vacío => null: el backend conserva el valor anterior
+            cost: product.cost === "" ? null : Number(product.cost),
             priceWholesale: Number(product.priceWholesale),
             active: product.active,
           })),
@@ -286,9 +301,11 @@ function ProductsPanel() {
             <tr>
               <th>Código</th>
               <th>Descripción</th>
+              <th>Costo</th>
               <th>Stock viaje</th>
               <th>Stock casa</th>
               <th>Precio mayorista</th>
+              <th>Ganancia/uni</th>
               <th>Activo</th>
               <th>Acciones</th>
             </tr>
@@ -296,7 +313,7 @@ function ProductsPanel() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7}>Sin resultados para esa búsqueda.</td>
+                <td colSpan={9}>Sin resultados para esa búsqueda.</td>
               </tr>
             ) : null}
             {filtered.map((product) => (
@@ -315,6 +332,25 @@ function ProductsPanel() {
                         )
                       );
                     }}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    min="0"
+                    value={product.cost}
+                    onChange={(event) => {
+                      markDirty(product.id);
+                      setProducts((rows) =>
+                        rows.map((row) =>
+                          row.id === product.id
+                            ? { ...row, cost: event.target.value }
+                            : row
+                        )
+                      );
+                    }}
+                    style={{ width: "100px" }}
+                    aria-label={`Costo de ${product.reference}`}
                   />
                 </td>
                 <td>
@@ -377,6 +413,11 @@ function ProductsPanel() {
                   />
                 </td>
                 <td>
+                  <span className={`profit-cell ${Number(product.priceWholesale) - Number(product.cost) < 0 ? "neg" : ""}`}>
+                    {formatMoney(Number(product.priceWholesale) - Number(product.cost))}
+                  </span>
+                </td>
+                <td>
                   <input
                     type="checkbox"
                     checked={product.active}
@@ -424,6 +465,79 @@ const STATUS_LABELS = {
   cancelled: "Cancelado",
 };
 
+function PdfIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M9 15h6M9 11h2" />
+    </svg>
+  );
+}
+
+function WhatsAppIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12.04 2a9.9 9.9 0 0 0-8.45 15.1L2 22l5.03-1.56A9.9 9.9 0 1 0 12.04 2Zm5.75 14.06c-.25.7-1.44 1.33-2 1.38-.55.05-1.06.25-3.56-.74-3-1.2-4.9-4.3-5.05-4.5-.15-.2-1.2-1.6-1.2-3.05 0-1.45.77-2.16 1.04-2.46.27-.3.6-.37.8-.37.2 0 .4 0 .57.01.19.01.44-.07.68.52.25.6.84 2.05.92 2.2.07.15.12.32.02.52-.1.2-.15.32-.3.5-.15.17-.32.39-.45.52-.15.15-.31.31-.13.61.18.3.79 1.3 1.7 2.1 1.17 1.05 2.16 1.37 2.47 1.53.3.15.48.13.66-.08.18-.2.76-.88.96-1.18.2-.3.4-.25.68-.15.27.1 1.73.82 2.03.97.3.15.5.22.57.35.08.12.08.72-.17 1.42Z" />
+    </svg>
+  );
+}
+
+function WhatsAppModal({ order, onClose }) {
+  const [number, setNumber] = useState(process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || "5491126151141");
+  const [error, setError] = useState("");
+
+  const send = () => {
+    const clean = number.replace(/\D/g, "");
+    if (clean.length < 8) {
+      setError("Ingresá un número válido (solo dígitos, con código de país).");
+      return;
+    }
+    window.open(buildWhatsAppUrl(order, order.customerName, clean), "_blank", "noopener,noreferrer");
+    onClose();
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal whatsapp-modal" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">
+          ×
+        </button>
+        <h2>Enviar presupuesto por WhatsApp</h2>
+        <p className="transfer-product">
+          Pedido #{order.id} — {order.customerName} · <strong>{formatMoney(order.total)}</strong>
+        </p>
+        <div className="form-grid">
+          <label>
+            Número de WhatsApp del destinatario
+            <input
+              type="tel"
+              name="whatsappNumber"
+              inputMode="tel"
+              value={number}
+              onChange={(event) => setNumber(event.target.value)}
+              placeholder="Ej: 5491126151141"
+              autoFocus
+            />
+          </label>
+        </div>
+        <p className="form-hint">
+          Solo dígitos, con código de país (ej: <strong>54911...</strong> para Argentina).
+        </p>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="btn btn-outline" onClick={onClose}>
+            Cancelar
+          </button>
+          <button type="button" className="btn btn-primary" onClick={send}>
+            Enviar por WhatsApp
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OrderEditModal({ order, onClose, onSaved }) {
   const [products, setProducts] = useState([]);
   const [customerName, setCustomerName] = useState(order.customerName);
@@ -431,7 +545,8 @@ function OrderEditModal({ order, onClose, onSaved }) {
   const [discountMode, setDiscountMode] = useState(order.discountType || "none");
   const [discountValue, setDiscountValue] = useState(order.discountValue || "");
   const [notes, setNotes] = useState(order.notes || "");
-  const [addProductId, setAddProductId] = useState("");
+  const [addQuery, setAddQuery] = useState("");
+  const addSearchRef = useRef(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -467,6 +582,18 @@ function OrderEditModal({ order, onClose, onSaved }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order.id]);
 
+  // Cierra la búsqueda al hacer clic fuera del buscador (mousedown para que
+  // corra antes que el click de los resultados, que usa preventDefault).
+  useEffect(() => {
+    const onOutside = (event) => {
+      if (addSearchRef.current && !addSearchRef.current.contains(event.target)) {
+        setAddQuery("");
+      }
+    };
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, []);
+
   const parsedDiscount = Number(discountValue);
   const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
   const discountAmount =
@@ -489,9 +616,21 @@ function OrderEditModal({ order, onClose, onSaved }) {
   const removeItem = (productId) =>
     setItems((current) => current.filter((item) => item.productId !== productId));
 
-  const addProduct = () => {
-    const product = products.find((p) => p.id === Number(addProductId));
-    if (!product) return;
+  // Resultados de la búsqueda de productos para agregar: muestra hasta 8
+  // coincidencias por código/descripción. Los que ya están en el pedido se
+  // muestran igual (agregarlos otra vez suma +1 a la cantidad).
+  const addResults = products
+    .filter((product) => {
+      const q = addQuery.trim().toLowerCase();
+      if (!q) return false;
+      return (
+        product.reference.toLowerCase().includes(q) ||
+        product.description.toLowerCase().includes(q)
+      );
+    })
+    .slice(0, 8);
+
+  const addProduct = (product) => {
     setItems((current) => {
       const existing = current.find((item) => item.productId === product.id);
       if (existing) {
@@ -512,7 +651,7 @@ function OrderEditModal({ order, onClose, onSaved }) {
         },
       ];
     });
-    setAddProductId("");
+    setAddQuery("");
   };
 
   const save = async () => {
@@ -599,23 +738,45 @@ function OrderEditModal({ order, onClose, onSaved }) {
         </div>
 
         <div className="edit-add-row">
-          <select
-            value={addProductId}
-            onChange={(event) => setAddProductId(event.target.value)}
-            aria-label="Agregar producto al pedido"
-          >
-            <option value="">Agregar producto...</option>
-            {products
-              .filter((product) => !items.some((item) => item.productId === product.id))
-              .map((product) => (
-                <option key={product.id} value={product.id}>
-                  {product.reference} — {product.description}
-                </option>
-              ))}
-          </select>
-          <button type="button" className="btn btn-outline" onClick={addProduct} disabled={!addProductId}>
-            Agregar
-          </button>
+          <div className="product-search" ref={addSearchRef}>
+            <input
+              type="search"
+              name="productSearch"
+              value={addQuery}
+              onChange={(event) => setAddQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && addResults.length > 0) {
+                  event.preventDefault();
+                  addProduct(addResults[0]);
+                } else if (event.key === "Escape") {
+                  setAddQuery("");
+                }
+              }}
+              placeholder="Buscar producto por código o descripción..."
+              aria-label="Buscar producto para agregar al pedido"
+            />
+            {addQuery.trim() && (
+              <div className="product-search-results">
+                {addResults.length === 0 ? (
+                  <p className="product-search-empty">Sin resultados.</p>
+                ) : (
+                  addResults.map((product) => (
+                    <button
+                      key={product.id}
+                      type="button"
+                      className="product-search-result"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => addProduct(product)}
+                    >
+                      <span className="ref">{product.reference}</span>
+                      <span className="product-name">{product.description}</span>
+                      <span className="price">{formatMoney(product.priceWholesale)}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="discount-box" style={{ marginTop: "0.9rem" }}>
@@ -712,11 +873,12 @@ function OrderEditModal({ order, onClose, onSaved }) {
   );
 }
 
-function OrdersPanel() {
+function OrdersPanel({ onChange }) {
   const [orders, setOrders] = useState([]);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
   const [editingOrder, setEditingOrder] = useState(null);
+  const [whatsappOrder, setWhatsappOrder] = useState(null);
 
   const load = async () => {
     try {
@@ -735,6 +897,7 @@ function OrdersPanel() {
     try {
       await authFetch(`/api/orders/${id}/deliver`, { method: "PATCH" });
       await load();
+      onChange?.();
     } catch (err) {
       setError(err.message);
     }
@@ -744,6 +907,7 @@ function OrdersPanel() {
     try {
       await authFetch(`/api/orders/${id}/cancel`, { method: "PATCH" });
       await load();
+      onChange?.();
     } catch (err) {
       setError(err.message);
     }
@@ -773,6 +937,7 @@ function OrdersPanel() {
     try {
       await authFetch(`/api/orders/${id}/restore`, { method: "PATCH" });
       await load();
+      onChange?.();
     } catch (err) {
       setError(err.message);
     }
@@ -782,6 +947,7 @@ function OrdersPanel() {
     try {
       await authFetch(`/api/orders/${id}/reopen`, { method: "PATCH" });
       await load();
+      onChange?.();
     } catch (err) {
       setError(err.message);
     }
@@ -873,32 +1039,53 @@ function OrdersPanel() {
                 </td>
                 <td>{new Date(order.createdAt).toLocaleString("es-AR")}</td>
                 <td>
-                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <button className="btn btn-outline" onClick={() => downloadInvoice(order.id)}>
-                      Presupuesto
-                    </button>
+                  <div className="order-actions">
+                    <div className="order-actions-row">
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        title="Descargar presupuesto (PDF)"
+                        aria-label={`Presupuesto PDF del pedido ${order.id}`}
+                        onClick={() => downloadInvoice(order.id)}
+                      >
+                        <PdfIcon />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn icon-btn-wa"
+                        title="Enviar por WhatsApp"
+                        aria-label={`Enviar pedido ${order.id} por WhatsApp`}
+                        onClick={() => setWhatsappOrder(order)}
+                      >
+                        <WhatsAppIcon />
+                      </button>
+                    </div>
                     {order.status === "pending" && (
-                      <>
-                        <button className="btn btn-outline" onClick={() => setEditingOrder(order)}>
+                      <div className="order-actions-row">
+                        <button className="btn btn-outline btn-sm" onClick={() => setEditingOrder(order)}>
                           Editar
                         </button>
-                        <button className="btn btn-primary" onClick={() => deliver(order.id)}>
+                        <button className="btn btn-primary btn-sm" onClick={() => deliver(order.id)}>
                           Entregado
                         </button>
-                        <button className="btn btn-danger" onClick={() => cancel(order.id)}>
+                        <button className="btn btn-danger btn-sm" onClick={() => cancel(order.id)}>
                           Cancelar
                         </button>
-                      </>
+                      </div>
                     )}
                     {order.status === "cancelled" && (
-                      <button className="btn btn-outline" onClick={() => restore(order.id)}>
-                        Restablecer
-                      </button>
+                      <div className="order-actions-row">
+                        <button className="btn btn-outline btn-sm" onClick={() => restore(order.id)}>
+                          Restablecer
+                        </button>
+                      </div>
                     )}
                     {order.status === "delivered" && (
-                      <button className="btn btn-outline" onClick={() => reopen(order.id)}>
-                        Volver a Pendiente
-                      </button>
+                      <div className="order-actions-row">
+                        <button className="btn btn-outline btn-sm" onClick={() => reopen(order.id)}>
+                          Volver a Pendiente
+                        </button>
+                      </div>
                     )}
                   </div>
                 </td>
@@ -915,14 +1102,19 @@ function OrdersPanel() {
           onSaved={async () => {
             setEditingOrder(null);
             await load();
+            onChange?.();
           }}
         />
+      )}
+
+      {whatsappOrder && (
+        <WhatsAppModal order={whatsappOrder} onClose={() => setWhatsappOrder(null)} />
       )}
     </div>
   );
 }
 
-function SalesReport() {
+function SalesReport({ ordersVersion }) {
   // Fechas en hora local (toISOString usa UTC y desfasa un día en AR).
   const toLocalDate = (date) => {
     const y = date.getFullYear();
@@ -957,16 +1149,33 @@ function SalesReport() {
     }
   };
 
+  // Si cambió algún pedido mientras este informe ya estaba generado (p.ej. se
+  // marcó Entregado en la pestaña Pedidos), se regenera solo, sin F5.
+  useEffect(() => {
+    if (data) generate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordersVersion]);
+
   const exportCsv = () => {
     if (!data) return;
     const header =
       data.groupBy === "product"
-        ? ["Código", "Descripción", "Pedidos", "Unidades", "Facturado", "Stock viaje", "Stock casa"]
-        : ["Cliente", "Pedidos", "Entregados", "Unidades", "Facturado"];
+        ? ["Código", "Descripción", "Pedidos", "Unidades", "Facturado", "Costo", "Ganancia", "Stock viaje", "Stock casa"]
+        : ["Cliente", "Pedidos", "Entregados", "Unidades", "Facturado", "Costo", "Ganancia"];
     const rows = data.rows.map((row) =>
       data.groupBy === "product"
-        ? [row.reference, row.description, row.orders, row.units, row.revenue, row.stockViaje, row.stockCasa]
-        : [row.customer, row.orders, row.deliveredOrders, row.units, row.revenue]
+        ? [
+            row.reference,
+            row.description,
+            row.orders,
+            row.units,
+            row.revenue,
+            row.cost,
+            row.profit,
+            row.stockViaje,
+            row.stockCasa,
+          ]
+        : [row.customer, row.orders, row.deliveredOrders, row.units, row.revenue, row.cost, row.profit]
     );
     downloadCsv(`ventas-${from}-${to}.csv`, [header, ...rows]);
   };
@@ -1005,7 +1214,9 @@ function SalesReport() {
           <p className="report-totals">
             Período {data.from} → {data.to} · {data.totals.orders} pedidos
             {data.totals.units != null ? ` · ${data.totals.units} unidades` : ""} ·{" "}
-            <strong>Facturado: {formatMoney(data.totals.revenue)}</strong>
+            <strong>Facturado: {formatMoney(data.totals.revenue)}</strong> ·{" "}
+            Costo: {formatMoney(data.totals.cost)} ·{" "}
+            <strong className="profit-total">Ganancia: {formatMoney(data.totals.profit)}</strong>
           </p>
           <div className="table-wrap">
             <table>
@@ -1018,6 +1229,8 @@ function SalesReport() {
                       <th>Pedidos</th>
                       <th>Unidades</th>
                       <th>Facturado</th>
+                      <th>Costo</th>
+                      <th>Ganancia</th>
                       <th>Stock viaje</th>
                       <th>Stock casa</th>
                     </>
@@ -1028,6 +1241,8 @@ function SalesReport() {
                       <th>Entregados</th>
                       <th>Unidades</th>
                       <th>Facturado</th>
+                      <th>Costo</th>
+                      <th>Ganancia</th>
                     </>
                   )}
                 </tr>
@@ -1035,7 +1250,7 @@ function SalesReport() {
               <tbody>
                 {data.rows.length === 0 ? (
                   <tr>
-                    <td colSpan={data.groupBy === "product" ? 7 : 5}>Sin ventas en el período.</td>
+                    <td colSpan={data.groupBy === "product" ? 9 : 7}>Sin ventas en el período.</td>
                   </tr>
                 ) : (
                   data.rows.map((row, index) =>
@@ -1046,6 +1261,8 @@ function SalesReport() {
                         <td>{row.orders}</td>
                         <td>{row.units}</td>
                         <td>{formatMoney(row.revenue)}</td>
+                        <td>{formatMoney(row.cost)}</td>
+                        <td className="profit-cell">{formatMoney(row.profit)}</td>
                         <td className={row.stockViaje <= 0 ? "stock-warn-cell" : ""}>{row.stockViaje}</td>
                         <td>{row.stockCasa}</td>
                       </tr>
@@ -1056,6 +1273,8 @@ function SalesReport() {
                         <td>{row.deliveredOrders}</td>
                         <td>{row.units}</td>
                         <td>{formatMoney(row.revenue)}</td>
+                        <td>{formatMoney(row.cost)}</td>
+                        <td className="profit-cell">{formatMoney(row.profit)}</td>
                       </tr>
                     )
                   )
@@ -1074,7 +1293,7 @@ function SalesReport() {
   );
 }
 
-function ReportsPanel() {
+function ReportsPanel({ ordersVersion }) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
 
@@ -1087,9 +1306,11 @@ function ReportsPanel() {
     }
   };
 
+  // Se recarga el resumen cuando cambia algún pedido (ver OrdersPanel.onChange).
   useEffect(() => {
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordersVersion]);
 
   if (!report) {
     return (
@@ -1108,7 +1329,7 @@ function ReportsPanel() {
       <h2>Reportes</h2>
       {error && <p style={{ color: "#b33" }}>{error}</p>}
 
-      <SalesReport />
+      <SalesReport ordersVersion={ordersVersion} />
 
       <h3>Resumen general</h3>
       <div className="stats-grid">
@@ -1131,6 +1352,14 @@ function ReportsPanel() {
         <div className="stat-card stat-card-highlight">
           <span className="stat-label">Vendido (entregado)</span>
           <span className="stat-value">{formatMoney(totals.deliveredRevenue)}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Costo (entregado)</span>
+          <span className="stat-value">{formatMoney(totals.deliveredCost)}</span>
+        </div>
+        <div className="stat-card stat-card-profit">
+          <span className="stat-label">Ganancia (entregado)</span>
+          <span className="stat-value">{formatMoney(totals.deliveredProfit)}</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">En curso (pendiente)</span>
@@ -1202,6 +1431,8 @@ function ReportsPanel() {
 export default function AdminPage() {
   const [authed, setAuthed] = useState(false);
   const [tab, setTab] = useState("orders");
+  // Contador de cambios de pedidos: hace que Reportes se recargue solo.
+  const [ordersVersion, setOrdersVersion] = useState(0);
 
   useEffect(() => {
     setAuthed(Boolean(getToken()));
@@ -1254,13 +1485,13 @@ export default function AdminPage() {
           sin guardar al cambiar de pestaña, por ejemplo en Productos. */}
       <div className="container">
         <div hidden={tab !== "orders"}>
-          <OrdersPanel />
+          <OrdersPanel onChange={() => setOrdersVersion((v) => v + 1)} />
         </div>
         <div hidden={tab !== "products"}>
           <ProductsPanel />
         </div>
         <div hidden={tab !== "reports"}>
-          <ReportsPanel />
+          <ReportsPanel ordersVersion={ordersVersion} />
         </div>
       </div>
     </div>

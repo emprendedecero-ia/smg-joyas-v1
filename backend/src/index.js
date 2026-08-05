@@ -6,7 +6,7 @@ import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
 import { pool, query, withTransaction } from './db.js';
-import { MAX_PER_ITEM, parseProductsFromExcel, seedDatabase } from './seed.js';
+import { MAX_PER_ITEM, parseProductsFromExcel, resolveExcelPath, seedDatabase } from './seed.js';
 
 function formatMoney(value) {
   return new Intl.NumberFormat('es-AR', {
@@ -35,6 +35,10 @@ async function migrate() {
 
   // Timestamp de última modificación del pedido (para la edición admin).
   await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+
+  // Costo unitario congelado al momento de la venta, para el informe de
+  // rentabilidad (no se afecta si el costo del producto cambia después).
+  await query(`ALTER TABLE order_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(12,2) NOT NULL DEFAULT 0`);
 
   // Límite de unidades por producto en un pedido (se amplió de 50 a un valor
   // mayor). Se re-crea el CHECK en cada arranque para bases existentes.
@@ -266,8 +270,10 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
 
-function formatProduct(row) {
-  return {
+// El costo solo se expone en endpoints de admin (con withCost: true); el
+// catálogo público no debe revelar el margen de ganancia.
+function formatProduct(row, { withCost = false } = {}) {
+  const product = {
     id: row.id,
     reference: row.reference,
     description: row.description,
@@ -281,6 +287,10 @@ function formatProduct(row) {
     imageUrl: row.image_path ? `/assets/products/${row.image_path}` : null,
     active: row.active,
   };
+  if (withCost) {
+    product.cost = Number(row.cost ?? 0);
+  }
+  return product;
 }
 
 function authHook(request, reply, done) {
@@ -354,7 +364,7 @@ app.get('/api/products', async (request) => {
     params
   );
 
-  return rows.map(formatProduct);
+  return rows.map((row) => formatProduct(row));
 });
 
 app.get('/api/products/:reference', async (request, reply) => {
@@ -372,6 +382,7 @@ app.get('/api/products/:reference', async (request, reply) => {
 
   return formatProduct(rows[0]);
 });
+
 
 app.post('/api/orders', async (request, reply) => {
   const { customerName, items, discountType, discountValue, notes } = request.body || {};
@@ -456,8 +467,8 @@ app.post('/api/orders', async (request, reply) => {
         await client.query(
           `INSERT INTO order_items (
             order_id, product_id, product_reference, product_description,
-            quantity, unit_price, line_total
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            quantity, unit_price, unit_cost, line_total
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             orderRecord.id,
             line.product.id,
@@ -465,6 +476,7 @@ app.post('/api/orders', async (request, reply) => {
             line.product.description,
             line.quantity,
             line.unitPrice,
+            Number(line.product.cost ?? 0),
             line.lineTotal,
           ]
         );
@@ -562,7 +574,7 @@ app.put('/api/orders/:id', { preHandler: authHook }, async (request, reply) => {
         seen.add(productId);
 
         const { rows } = await client.query(
-          'SELECT id, reference, description, price_wholesale FROM products WHERE id = $1',
+          'SELECT id, reference, description, price_wholesale, cost FROM products WHERE id = $1',
           [productId]
         );
         const product = rows[0];
@@ -589,8 +601,8 @@ app.put('/api/orders/:id', { preHandler: authHook }, async (request, reply) => {
         await client.query(
           `INSERT INTO order_items (
             order_id, product_id, product_reference, product_description,
-            quantity, unit_price, line_total
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            quantity, unit_price, unit_cost, line_total
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             orderId,
             line.product.id,
@@ -598,6 +610,7 @@ app.put('/api/orders/:id', { preHandler: authHook }, async (request, reply) => {
             line.product.description,
             line.quantity,
             line.unitPrice,
+            Number(line.product.cost ?? 0),
             line.lineTotal,
           ]
         );
@@ -908,6 +921,26 @@ app.get('/api/admin/reports/summary', { preHandler: authHook }, async () => {
     FROM orders
   `);
 
+  // Rentabilidad de los pedidos entregados: costo congelado en el pedido
+  // (unit_cost) o costo vigente del producto como respaldo. El descuento del
+  // pedido reduce lo cobrado pero no el costo.
+  const { rows: profit } = await query(`
+    SELECT
+      COALESCE(SUM(
+        COALESCE(NULLIF(oi.unit_cost, 0), p.cost, 0) * oi.quantity
+      ), 0) AS delivered_cost,
+      COALESCE(SUM(
+        oi.line_total * (1 - CASE WHEN (o.total + o.discount_amount) > 0
+             THEN o.discount_amount::numeric / (o.total + o.discount_amount)
+             ELSE 0 END)
+        - COALESCE(NULLIF(oi.unit_cost, 0), p.cost, 0) * oi.quantity
+      ), 0) AS delivered_profit
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id
+    LEFT JOIN products p ON p.id = oi.product_id
+    WHERE o.status = 'delivered'
+  `);
+
   const { rows: topProducts } = await query(`
     SELECT oi.product_reference AS reference,
            oi.product_description AS description,
@@ -939,6 +972,8 @@ app.get('/api/admin/reports/summary', { preHandler: authHook }, async () => {
       cancelled: totals[0].cancelled_orders,
       deliveredRevenue: Number(totals[0].delivered_revenue),
       pendingRevenue: Number(totals[0].pending_revenue),
+      deliveredCost: Number(profit[0].delivered_cost),
+      deliveredProfit: Number(profit[0].delivered_profit),
     },
     topProducts: topProducts.map((row) => ({
       reference: row.reference,
@@ -964,18 +999,26 @@ app.get('/api/admin/reports/sales', { preHandler: authHook }, async (request, re
     return reply.code(400).send({ error: 'La fecha "desde" no puede ser posterior a "hasta"' });
   }
 
+  // Costo congelado en el pedido (unit_cost) o costo vigente del producto como
+  // respaldo para pedidos anteriores al snapshot.
+  const costExpr = 'COALESCE(NULLIF(oi.unit_cost, 0), p.cost, 0)';
+
   if (group === 'client') {
     const { rows } = await query(
       `SELECT o.customer_name AS customer,
               COUNT(o.id)::int AS orders,
               COUNT(o.id) FILTER (WHERE o.status = 'delivered')::int AS delivered_orders,
               COALESCE(SUM(item.qty), 0)::int AS units,
-              SUM(o.total) AS revenue
+              SUM(o.total) AS revenue,
+              COALESCE(SUM(item.cost), 0) AS cost
        FROM orders o
        LEFT JOIN (
-         SELECT order_id, SUM(quantity)::int AS qty
-         FROM order_items
-         GROUP BY order_id
+         SELECT oi.order_id,
+                SUM(oi.quantity)::int AS qty,
+                SUM(${costExpr} * oi.quantity) AS cost
+         FROM order_items oi
+         LEFT JOIN products p ON p.id = oi.product_id
+         GROUP BY oi.order_id
        ) item ON item.order_id = o.id
        WHERE o.status <> 'cancelled'
          AND o.created_at >= $1::date
@@ -987,8 +1030,16 @@ app.get('/api/admin/reports/sales', { preHandler: authHook }, async (request, re
 
     const { rows: totals } = await query(
       `SELECT COUNT(*)::int AS orders,
-              COALESCE(SUM(o.total), 0) AS revenue
+              COALESCE(SUM(o.total), 0) AS revenue,
+              COALESCE(SUM(item.cost), 0) AS cost
        FROM orders o
+       LEFT JOIN (
+         SELECT oi.order_id,
+                SUM(${costExpr} * oi.quantity) AS cost
+         FROM order_items oi
+         LEFT JOIN products p ON p.id = oi.product_id
+         GROUP BY oi.order_id
+       ) item ON item.order_id = o.id
        WHERE o.status <> 'cancelled'
          AND o.created_at >= $1::date
          AND o.created_at < ($2::date + INTERVAL '1 day')`,
@@ -999,14 +1050,25 @@ app.get('/api/admin/reports/sales', { preHandler: authHook }, async (request, re
       groupBy: 'client',
       from: fromDate,
       to: toDate,
-      totals: { orders: totals[0].orders, revenue: Number(totals[0].revenue) },
-      rows: rows.map((row) => ({
-        customer: row.customer,
-        orders: row.orders,
-        deliveredOrders: row.delivered_orders,
-        units: row.units,
-        revenue: Number(row.revenue),
-      })),
+      totals: {
+        orders: totals[0].orders,
+        revenue: Number(totals[0].revenue),
+        cost: Number(totals[0].cost),
+        profit: Number(totals[0].revenue) - Number(totals[0].cost),
+      },
+      rows: rows.map((row) => {
+        const revenue = Number(row.revenue);
+        const cost = Number(row.cost);
+        return {
+          customer: row.customer,
+          orders: row.orders,
+          deliveredOrders: row.delivered_orders,
+          units: row.units,
+          revenue,
+          cost,
+          profit: revenue - cost,
+        };
+      }),
     };
   }
 
@@ -1022,9 +1084,11 @@ app.get('/api/admin/reports/sales', { preHandler: authHook }, async (request, re
             oi.product_description AS description,
             COUNT(DISTINCT o.id)::int AS orders,
             SUM(oi.quantity)::int AS units,
-            SUM(oi.line_total * ${discountRatio}) AS revenue
+            SUM(oi.line_total * ${discountRatio}) AS revenue,
+            SUM(${costExpr} * oi.quantity) AS cost
      FROM order_items oi
      JOIN orders o ON o.id = oi.order_id
+     LEFT JOIN products p ON p.id = oi.product_id
      WHERE o.status <> 'cancelled'
        AND o.created_at >= $1::date
        AND o.created_at < ($2::date + INTERVAL '1 day')
@@ -1044,9 +1108,11 @@ app.get('/api/admin/reports/sales', { preHandler: authHook }, async (request, re
   const { rows: totals } = await query(
     `SELECT COUNT(DISTINCT o.id)::int AS orders,
             COALESCE(SUM(oi.quantity), 0)::int AS units,
-            COALESCE(SUM(oi.line_total * ${discountRatio}), 0) AS revenue
+            COALESCE(SUM(oi.line_total * ${discountRatio}), 0) AS revenue,
+            COALESCE(SUM(${costExpr} * oi.quantity), 0) AS cost
      FROM order_items oi
      JOIN orders o ON o.id = oi.order_id
+     LEFT JOIN products p ON p.id = oi.product_id
      WHERE o.status <> 'cancelled'
        AND o.created_at >= $1::date
        AND o.created_at < ($2::date + INTERVAL '1 day')`,
@@ -1061,16 +1127,24 @@ app.get('/api/admin/reports/sales', { preHandler: authHook }, async (request, re
       orders: totals[0].orders,
       units: totals[0].units,
       revenue: Number(totals[0].revenue),
+      cost: Number(totals[0].cost),
+      profit: Number(totals[0].revenue) - Number(totals[0].cost),
     },
-    rows: rows.map((row) => ({
-      reference: row.reference,
-      description: row.description,
-      orders: row.orders,
-      units: row.units,
-      revenue: Number(row.revenue),
-      stockViaje: stockByReference.get(row.reference)?.stockViaje ?? 0,
-      stockCasa: stockByReference.get(row.reference)?.stockCasa ?? 0,
-    })),
+    rows: rows.map((row) => {
+      const revenue = Number(row.revenue);
+      const cost = Number(row.cost);
+      return {
+        reference: row.reference,
+        description: row.description,
+        orders: row.orders,
+        units: row.units,
+        revenue,
+        cost,
+        profit: revenue - cost,
+        stockViaje: stockByReference.get(row.reference)?.stockViaje ?? 0,
+        stockCasa: stockByReference.get(row.reference)?.stockCasa ?? 0,
+      };
+    }),
   };
 });
 
@@ -1091,7 +1165,7 @@ app.get('/api/admin/products', { preHandler: authHook }, async () => {
      JOIN categories c ON c.id = p.category_id
      ORDER BY p.reference`
   );
-  return rows.map(formatProduct);
+  return rows.map((row) => formatProduct(row, { withCost: true }));
 });
 
 app.put('/api/admin/products/:id', { preHandler: authHook }, async (request, reply) => {
@@ -1100,6 +1174,7 @@ app.put('/api/admin/products/:id', { preHandler: authHook }, async (request, rep
     description,
     stock,
     stockCasa,
+    cost,
     priceWholesale,
     priceRetail,
     priceMl,
@@ -1111,14 +1186,15 @@ app.put('/api/admin/products/:id', { preHandler: authHook }, async (request, rep
       description = COALESCE($2, description),
       stock = COALESCE($3, stock),
       stock_casa = COALESCE($4, stock_casa),
-      price_wholesale = COALESCE($5, price_wholesale),
-      price_retail = COALESCE($6, price_retail),
-      price_ml = COALESCE($7, price_ml),
-      active = COALESCE($8, active),
+      cost = COALESCE($5, cost),
+      price_wholesale = COALESCE($6, price_wholesale),
+      price_retail = COALESCE($7, price_retail),
+      price_ml = COALESCE($8, price_ml),
+      active = COALESCE($9, active),
       updated_at = NOW()
      WHERE id = $1
      RETURNING *`,
-    [id, description, stock, stockCasa, priceWholesale, priceRetail, priceMl, active]
+    [id, description, stock, stockCasa, cost, priceWholesale, priceRetail, priceMl, active]
   );
 
   if (!rows[0]) {
@@ -1133,7 +1209,7 @@ app.put('/api/admin/products/:id', { preHandler: authHook }, async (request, rep
     [id]
   );
 
-  return formatProduct(full[0]);
+  return formatProduct(full[0], { withCost: true });
 });
 
 // Guardado masivo: actualiza todos los productos modificados en una sola
@@ -1155,12 +1231,13 @@ app.put('/api/admin/products/bulk', { preHandler: authHook }, async (request, re
 
         const stock = product.stock != null ? Number(product.stock) : null;
         const stockCasa = product.stockCasa != null ? Number(product.stockCasa) : null;
+        const cost = product.cost != null ? Number(product.cost) : null;
         const priceWholesale = product.priceWholesale != null ? Number(product.priceWholesale) : null;
 
-        for (const value of [stock, stockCasa, priceWholesale]) {
+        for (const value of [stock, stockCasa, cost, priceWholesale]) {
           if (value !== null && (!Number.isFinite(value) || value < 0)) {
             throw Object.assign(
-              new Error('Stock y precios no pueden ser negativos'),
+              new Error('Stock, costo y precios no pueden ser negativos'),
               { statusCode: 400 }
             );
           }
@@ -1171,8 +1248,9 @@ app.put('/api/admin/products/bulk', { preHandler: authHook }, async (request, re
             description = COALESCE($2, description),
             stock = COALESCE($3, stock),
             stock_casa = COALESCE($4, stock_casa),
-            price_wholesale = COALESCE($5, price_wholesale),
-            active = COALESCE($6, active),
+            cost = COALESCE($5, cost),
+            price_wholesale = COALESCE($6, price_wholesale),
+            active = COALESCE($7, active),
             updated_at = NOW()
            WHERE id = $1`,
           [
@@ -1180,6 +1258,7 @@ app.put('/api/admin/products/bulk', { preHandler: authHook }, async (request, re
             product.description != null ? String(product.description) : null,
             stock,
             stockCasa,
+            cost,
             priceWholesale,
             product.active != null ? Boolean(product.active) : null,
           ]
@@ -1264,48 +1343,73 @@ app.post('/api/admin/reseed', { preHandler: authHook }, async (request, reply) =
   }
 });
 
+// Reemplaza el catálogo con el Excel vigente (bijou.xlsx): actualiza/inserta
+// todos los productos del archivo (reactivándolos) y desactiva los que ya no
+// figuren. El historial de pedidos se conserva intacto.
 app.post('/api/admin/import-excel', { preHandler: authHook }, async (request, reply) => {
   try {
-    const excelPath = process.env.EXCEL_PATH || '/app/precios.xlsx';
+    const excelPath = resolveExcelPath();
     const importAssetsDir = assetsDir || process.env.ASSETS_DIR || '/app/products-assets';
     const products = parseProductsFromExcel(excelPath, importAssetsDir);
 
-    for (const product of products) {
-      const slug = product.category.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-');
-      const { rows: categoryRows } = await query(
-        `INSERT INTO categories (name, slug) VALUES ($1, $2)
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
-        [product.category, slug]
-      );
-
-      await query(
-        `INSERT INTO products (reference, category_id, description, stock, cost, price_wholesale, price_retail, price_ml, image_path)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         ON CONFLICT (reference) DO UPDATE SET
-           category_id = EXCLUDED.category_id,
-           description = EXCLUDED.description,
-           stock = EXCLUDED.stock,
-           cost = EXCLUDED.cost,
-           price_wholesale = EXCLUDED.price_wholesale,
-           price_retail = EXCLUDED.price_retail,
-           price_ml = EXCLUDED.price_ml,
-           image_path = EXCLUDED.image_path,
-           updated_at = NOW()`,
-        [
-          product.reference,
-          categoryRows[0].id,
-          product.description,
-          product.stock,
-          product.cost,
-          product.priceWholesale,
-          product.priceRetail,
-          product.priceMl,
-          product.imagePath,
-        ]
-      );
+    if (products.length === 0) {
+      return reply.code(400).send({ error: 'El Excel no tiene productos válidos' });
     }
 
-    return { imported: products.length };
+    const references = products.map((product) => product.reference);
+    let deactivated = 0;
+
+    await withTransaction(async (client) => {
+      for (const product of products) {
+        const slug = product.category.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-');
+        const { rows: categoryRows } = await client.query(
+          `INSERT INTO categories (name, slug) VALUES ($1, $2)
+           ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+          [product.category, slug]
+        );
+
+        await client.query(
+          `INSERT INTO products (reference, category_id, description, stock, cost, price_wholesale, price_retail, price_ml, image_path, active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE)
+           ON CONFLICT (reference) DO UPDATE SET
+             category_id = EXCLUDED.category_id,
+             description = EXCLUDED.description,
+             stock = EXCLUDED.stock,
+             cost = EXCLUDED.cost,
+             price_wholesale = EXCLUDED.price_wholesale,
+             price_retail = EXCLUDED.price_retail,
+             price_ml = EXCLUDED.price_ml,
+             image_path = EXCLUDED.image_path,
+             active = TRUE,
+             updated_at = NOW()`,
+          [
+            product.reference,
+            categoryRows[0].id,
+            product.description,
+            product.stock,
+            product.cost,
+            product.priceWholesale,
+            product.priceRetail,
+            product.priceMl,
+            product.imagePath,
+          ]
+        );
+      }
+
+      // Los productos que ya no están en el Excel quedan inactivos (no se
+      // borran: el historial de pedidos los sigue referenciando).
+      const { rowCount } = await client.query(
+        'UPDATE products SET active = FALSE, updated_at = NOW() WHERE reference <> ALL($1)',
+        [references]
+      );
+      deactivated = rowCount;
+    });
+
+    return {
+      imported: products.length,
+      deactivated,
+      excel: path.basename(excelPath),
+    };
   } catch (error) {
     return reply.code(500).send({ error: error.message });
   }

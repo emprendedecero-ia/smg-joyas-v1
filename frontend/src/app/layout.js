@@ -19,6 +19,14 @@ export const metadata = {
   description: "Catálogo mayorista SMG Joyería",
 };
 
+// viewport-fit=cover habilita env(safe-area-inset-*) en iPhones con notch y
+// barra inferior (se usa en el drawer del carrito y en las acciones admin).
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
+
 export default function RootLayout({ children }) {
   return (
     <html lang="es" className={`${playfair.variable} ${inter.variable}`}>

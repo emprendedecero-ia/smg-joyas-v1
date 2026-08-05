@@ -14,27 +14,33 @@ function slugify(name) {
     .replace(/^-|-$/g, '');
 }
 
-function resolveExcelPath() {
+// El catálogo vive en bijou.xlsx (cod interno, precios redondeados, costo).
+// precios.xlsx se dejó de usar: es un listado viejo que generaba duplicados.
+const EXCEL_FILENAMES = ['bijou.xlsx'];
+
+export function resolveExcelPath() {
+  // El directorio actual tiene prioridad sobre el padre: evita que un archivo
+  // suelto en la carpeta superior (p.ej. precios.xlsx) tape al catálogo vigente.
   const candidates = [
     process.env.EXCEL_PATH,
-    '/app/precios.xlsx',
-    path.resolve(process.cwd(), '../precios.xlsx'),
-    path.resolve(process.cwd(), 'precios.xlsx'),
+    ...EXCEL_FILENAMES.map((name) => `/app/${name}`),
+    ...EXCEL_FILENAMES.map((name) => path.resolve(process.cwd(), name)),
+    ...EXCEL_FILENAMES.map((name) => path.resolve(process.cwd(), `../${name}`)),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
 
-  throw new Error('No se encontró precios.xlsx');
+  throw new Error('No se encontró bijou.xlsx');
 }
 
 function resolveAssetsDir() {
   const candidates = [
     process.env.ASSETS_DIR,
     '/app/products-assets',
-    path.resolve(process.cwd(), '../products-assets'),
     path.resolve(process.cwd(), 'products-assets'),
+    path.resolve(process.cwd(), '../products-assets'),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
@@ -57,16 +63,23 @@ export function parseProductsFromExcel(excelPath, assetsDir) {
 
   return rows
     .map((row) => {
-      const reference = String(row.PRODUCTO || row.producto || '').trim();
+      // El código de referencia es "Cod interno" (el mismo sistema de códigos
+      // que ya usaba la base, ej. AN1064). Coincide con el nombre de las
+      // imágenes en products-assets y con el historial de pedidos.
+      const reference = String(
+        row['Cod interno'] ?? row['COD INTERNO'] ?? row.cod_interno ?? row.PRODUCTO ?? row.producto ?? ''
+      ).trim();
       if (!reference) return null;
 
       const category = String(row['CATEGORÍA'] || row.CATEGORIA || row.categoria || 'SIN CATEGORIA').trim();
       const description = String(row['Descripción'] || row.Descripcion || row.descripcion || '').trim();
       const stock = Math.max(0, Math.floor(Number(row.Stock ?? row.stock ?? 0)));
       const cost = Number(row.Costo ?? row.costo ?? 0) || 0;
-      const priceWholesale = Number(row['PRECIO mayorista'] ?? row.precio_mayorista ?? 0) || 0;
-      const priceRetail = Number(row['PRECIO minorista'] ?? row.precio_minorista ?? 0) || 0;
-      const priceMl = Number(row['PRECIO ML'] ?? row.precio_ml ?? 0) || 0;
+      // Se usa el precio REDONDEADO (ej. "REDONDEO MAYORISTA") que es el que
+      // se muestra en la página, con el precio original como respaldo.
+      const priceWholesale = Number(row['REDONDEO MAYORISTA'] ?? row.redondeo_mayorista ?? row['PRECIO mayorista'] ?? row.precio_mayorista ?? 0) || 0;
+      const priceRetail = Number(row['REDONDEO MINORISTA'] ?? row.redondeo_minorista ?? row['PRECIO minorista'] ?? row.precio_minorista ?? 0) || 0;
+      const priceMl = Number(row['REDONDEO ML'] ?? row.redondeo_ml ?? row['PRECIO ML'] ?? row.precio_ml ?? 0) || 0;
 
       return {
         reference,
@@ -85,7 +98,7 @@ export function parseProductsFromExcel(excelPath, assetsDir) {
 
 export async function seedDatabase() {
   // Si la base ya tiene productos, no hace falta el Excel: el seed se omite
-  // sin exigir que precios.xlsx exista (relevante en deploys donde el archivo
+  // sin exigir que bijou.xlsx exista (relevante en deploys donde el archivo
   // no viajó con la imagen o se actualizó la base en otro entorno).
   const { rows: existing } = await query('SELECT COUNT(*)::int AS count FROM products');
   if (existing[0].count > 0) {

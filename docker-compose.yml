@@ -30,7 +30,7 @@ services:
       - "4000:4000"
     volumes:
       - ./products-assets:/app/products-assets:ro
-      - ./precios.xlsx:/app/precios.xlsx:ro
+      - ./bijou.xlsx:/app/bijou.xlsx:ro
     depends_on:
       db:
         condition: service_healthy

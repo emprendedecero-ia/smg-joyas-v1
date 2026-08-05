@@ -13,7 +13,7 @@ COPY backend/src ./src
 # Se hornean dentro de la imagen porque en producción (Render, Zeabur) no hay
 # volúmenes montados: las imágenes de producto y el Excel viajan con el build.
 COPY products-assets ./products-assets
-COPY precios.xlsx ./precios.xlsx
+COPY bijou.xlsx ./bijou.xlsx
 
 EXPOSE 4000
 

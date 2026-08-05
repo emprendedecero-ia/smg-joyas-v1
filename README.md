@@ -26,7 +26,13 @@ Servicios:
 
 Admin: http://localhost:3000/admin (contraseña por defecto `admin123`)
 
-Al iniciar, la API importa automáticamente `precios.xlsx` si la base está vacía.
+Al iniciar, la API importa automáticamente `bijou.xlsx` si la base está vacía.
+Los precios que se muestran en la página son los **redondeados** del catálogo
+(`REDONDEO MAYORISTA`).
+
+**Admin → Productos → Importar desde Excel** reemplaza el catálogo con
+`bijou.xlsx`: actualiza/inserta todos los productos del archivo, los reactiva y
+**desactiva los que ya no figuren** (el historial de pedidos no se toca).
 
 ## Flujo de pedidos
 
@@ -37,7 +43,11 @@ Al iniciar, la API importa automáticamente `precios.xlsx` si la base está vac�
    cancelado o **volver a Pendiente** un entregado (el stock se devuelve y se
    vuelve a descontar al reentregar). Al marcar **Entregado** se descuenta el stock.
 
-Los precios visibles en el catálogo son **mayoristas**.
+Los precios visibles en el catálogo son **mayoristas** (redondeados). El costo de
+cada producto queda **congelado en el pedido** al confirmarlo, así el informe de
+**rentabilidad** (Admin → Reportes) siempre muestra la ganancia real:
+`ganancia = facturado − costo`. También se puede editar el costo de cada producto
+en Admin → Productos (columna **Costo**) y se ve la ganancia por unidad.
 
 ## Desarrollo local (sin Docker)
 
@@ -60,7 +70,7 @@ Stack recomendado para producción sin costo: **Vercel** (frontend), **Render**
 imagen Docker del backend (no dependen de volúmenes).
 
 1. **Neon** → crear proyecto, copiar `DATABASE_URL`, ejecutar `db/init.sql` en la
-   consola SQL y dejar que el seed importe `precios.xlsx` (o usar
+   consola SQL y dejar que el seed importe `bijou.xlsx` (o usar
    Admin → Importar desde Excel).
 
 2. **Render** → New Web Service → conectar GitHub y elegir el repo. Render
@@ -88,7 +98,7 @@ backend/          API Fastify
 frontend/         Next.js (catálogo + admin)
 db/init.sql       Schema PostgreSQL
 products-assets/  Imágenes de productos
-precios.xlsx      Fuente de datos inicial
+bijou.xlsx        Catálogo vigente (cod interno, precios redondeados, costo)
 ```
 
 ## Variables de entorno

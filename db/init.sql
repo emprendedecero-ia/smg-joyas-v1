@@ -56,6 +56,8 @@ CREATE TABLE order_items (
   -- (la migración en backend/src/index.js re-crea este CHECK en cada arranque).
   quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 1000),
   unit_price NUMERIC(12, 2) NOT NULL,
+  -- Costo unitario congelado al momento de la venta (informe de rentabilidad)
+  unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
   line_total NUMERIC(12, 2) NOT NULL
 );
 
