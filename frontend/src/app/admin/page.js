@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { buildWhatsAppUrl, fetchJson, formatMoney, invoiceUrl, MAX_QTY } from "@/lib/api";
+import {
+  buildWhatsAppUrl,
+  fetchJson,
+  formatDateBa,
+  formatMoney,
+  getApiBase,
+  invoiceUrl,
+  MAX_QTY,
+} from "@/lib/api";
 
 const TOKEN_KEY = "smg-admin-token";
 
@@ -83,11 +91,11 @@ function LoginForm({ onSuccess }) {
 }
 
 function TransferModal({ product, onClose, onDone, onError }) {
-  const [from, setFrom] = useState("casa");
+  const [from, setFrom] = useState("oficina");
   const [quantity, setQuantity] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const to = from === "casa" ? "viaje" : "casa";
+  const to = from === "oficina" ? "viaje" : "oficina";
 
   const submit = async (event) => {
     event.preventDefault();
@@ -119,7 +127,7 @@ function TransferModal({ product, onClose, onDone, onError }) {
         </p>
         <div className="transfer-stocks">
           <div className="transfer-stock">
-            <span>Casa</span>
+            <span>Oficina</span>
             <strong>{product.stockCasa}</strong>
           </div>
           <span className="transfer-arrow">→</span>
@@ -132,8 +140,8 @@ function TransferModal({ product, onClose, onDone, onError }) {
           <label>
             Dirección
             <select name="transferFrom" value={from} onChange={(event) => setFrom(event.target.value)}>
-              <option value="casa">Casa → Viaje (reponer el bolso)</option>
-              <option value="viaje">Viaje → Casa (mercadería devuelta)</option>
+              <option value="oficina">Oficina → Viaje (reponer el bolso)</option>
+              <option value="viaje">Viaje → Oficina (mercadería devuelta)</option>
             </select>
           </label>
           <label>
@@ -156,15 +164,231 @@ function TransferModal({ product, onClose, onDone, onError }) {
   );
 }
 
+function AddStockModal({ product, onClose, onDone, onError }) {
+  const [deposit, setDeposit] = useState("oficina");
+  const [quantity, setQuantity] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    const qty = Number(quantity);
+    if (!Number.isInteger(qty) || qty < 1) return;
+    setLoading(true);
+    try {
+      await authFetch(`/api/admin/products/${product.id}/add-stock`, {
+        method: "POST",
+        body: JSON.stringify({ deposit, quantity: qty }),
+      });
+      onDone();
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const depositLabel = deposit === "oficina" ? "Oficina" : "Viaje";
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal transfer-modal" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">
+          ×
+        </button>
+        <h2>Sumar stock</h2>
+        <p className="transfer-product">
+          {product.reference} — {product.description}
+        </p>
+        <div className="transfer-stocks">
+          <div className="transfer-stock">
+            <span>Viaje</span>
+            <strong>{product.stock}</strong>
+          </div>
+          <span className="transfer-arrow">→</span>
+          <div className="transfer-stock">
+            <span>Oficina</span>
+            <strong>{product.stockCasa}</strong>
+          </div>
+        </div>
+        <form className="form-grid" onSubmit={submit} style={{ marginTop: "1rem" }}>
+          <label>
+            ¿A dónde entra la mercadería?
+            <select
+              name="stockDeposit"
+              value={deposit}
+              onChange={(event) => setDeposit(event.target.value)}
+            >
+              <option value="oficina">Oficina (stock de reposición)</option>
+              <option value="viaje">Viaje (bolso del vendedor)</option>
+            </select>
+          </label>
+          <label>
+            Cantidad que entró
+            <input
+              type="number"
+              name="stockQty"
+              min="1"
+              value={quantity}
+              onChange={(event) => setQuantity(event.target.value)}
+              placeholder="0"
+              autoFocus
+            />
+          </label>
+          <button className="btn btn-primary" disabled={loading}>
+            {loading ? "Guardando..." : `Sumar a ${depositLabel}`}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddProductModal({ categories, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    reference: "",
+    description: "",
+    category: "",
+    cost: "",
+    priceWholesale: "",
+    stock: "",
+    stockCasa: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const set = (key) => (event) => setForm((f) => ({ ...f, [key]: event.target.value }));
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await authFetch("/api/admin/products", {
+        method: "POST",
+        body: JSON.stringify({
+          reference: form.reference,
+          description: form.description,
+          category: form.category,
+          cost: form.cost === "" ? 0 : Number(form.cost),
+          priceWholesale: form.priceWholesale === "" ? 0 : Number(form.priceWholesale),
+          stock: form.stock === "" ? 0 : Number(form.stock),
+          stockCasa: form.stockCasa === "" ? 0 : Number(form.stockCasa),
+        }),
+      });
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal add-product-modal" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">
+          ×
+        </button>
+        <h2>Agregar producto</h2>
+        <p className="transfer-product">
+          Se agrega al catálogo manualmente, sin pasar por el Excel. Queda activo de inmediato.
+        </p>
+        {error && <p className="form-error">{error}</p>}
+        <form className="form-grid" onSubmit={submit}>
+          <label>
+            Código (obligatorio)
+            <input
+              name="reference"
+              value={form.reference}
+              onChange={set("reference")}
+              placeholder="Ej: AR42"
+              autoComplete="off"
+              autoFocus
+            />
+          </label>
+          <label>
+            Descripción
+            <input
+              name="description"
+              value={form.description}
+              onChange={set("description")}
+              placeholder="Ej: AROS LADY DI plata 14mm C/PIEDRAS"
+            />
+          </label>
+          <label>
+            Categoría
+            <input
+              name="category"
+              list="add-product-categories"
+              value={form.category}
+              onChange={set("category")}
+              placeholder="Ej: AROS"
+            />
+            <datalist id="add-product-categories">
+              {categories.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          </label>
+          <div className="add-product-numbers">
+            <label>
+              Costo
+              <input
+                type="number"
+                name="cost"
+                min="0"
+                inputMode="decimal"
+                value={form.cost}
+                onChange={set("cost")}
+                placeholder="0"
+              />
+            </label>
+            <label>
+              Precio mayorista
+              <input
+                type="number"
+                name="priceWholesale"
+                min="0"
+                inputMode="decimal"
+                value={form.priceWholesale}
+                onChange={set("priceWholesale")}
+                placeholder="0"
+              />
+            </label>
+            <label>
+              Stock viaje
+              <input type="number" name="stock" min="0" value={form.stock} onChange={set("stock")} placeholder="0" />
+            </label>
+            <label>
+              Stock oficina
+              <input type="number" name="stockCasa" min="0" value={form.stockCasa} onChange={set("stockCasa")} placeholder="0" />
+            </label>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="btn btn-outline" onClick={onClose}>
+              Cancelar
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={loading}>
+              {loading ? "Guardando..." : "Agregar producto"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ProductsPanel() {
   const [products, setProducts] = useState([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [importing, setImporting] = useState(false);
+  const [uploading, setUploading] = useState(false); // upload de Excel
   const [saving, setSaving] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [dirty, setDirty] = useState(new Set()); // ids con cambios sin guardar
   const [transferProduct, setTransferProduct] = useState(null);
+  const [addStockProduct, setAddStockProduct] = useState(null);
 
   const load = async () => {
     try {
@@ -177,32 +401,75 @@ function ProductsPanel() {
   const markDirty = (id) => setDirty((current) => new Set(current).add(id));
   const clearDirty = () => setDirty(new Set());
 
-  const importExcel = async () => {
-    // Reemplaza el catálogo con el Excel vigente (bijou.xlsx): reactiva los
-    // productos del archivo y desactiva los que ya no figuren.
+  // Descarga el catálogo completo como Excel editable (cambios masivos).
+  const exportXlsx = async () => {
+    setError("");
+    try {
+      const response = await fetch(`${getApiBase()}/api/admin/products/export`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "No se pudo generar el Excel");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      // Fecha de Buenos Aires en el nombre, igual que en el servidor.
+      const baParts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Argentina/Buenos_Aires",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(new Date());
+      const get = (type) => baParts.find((part) => part.type === type).value;
+      link.download = `productos-${get("year")}-${get("month")}-${get("day")}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Aplica los cambios masivos de un Excel subido (editado a partir del export).
+  const importFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
     if (
       !window.confirm(
-        "¿Reemplazar el catálogo con el Excel (bijou.xlsx)? Se actualizan todos los productos del archivo (descripción, precios, stock y activación) y se desactivan los que ya no estén. El historial de pedidos no se toca."
+        "¿Aplicar los cambios del Excel al catálogo? Se actualizan precios, descripciones, stocks y el estado Activo de los productos del archivo. El historial de pedidos no se toca."
       )
     ) {
+      event.target.value = "";
       return;
     }
-    setImporting(true);
+    setUploading(true);
     setError("");
     setMessage("");
     try {
-      const result = await authFetch("/api/admin/import-excel", { method: "POST" });
-      const parts = [`${result.imported} productos actualizados`];
-      if (result.deactivated > 0) {
-        parts.push(`${result.deactivated} desactivados`);
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(`${getApiBase()}/api/admin/products/import`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${getToken()}` },
+        body: formData,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || "Error al importar");
       }
-      setMessage(`Catálogo reemplazado (${result.excel || "excel"}): ${parts.join(", ")}.`);
+      setMessage(
+        `Importación OK: ${result.created} productos nuevos, ${result.updated} actualizados.`
+      );
       clearDirty();
       await load();
     } catch (err) {
       setError(err.message);
     } finally {
-      setImporting(false);
+      setUploading(false);
+      event.target.value = "";
     }
   };
 
@@ -259,13 +526,34 @@ function ProductsPanel() {
     );
   });
 
+  const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort();
+
   return (
     <div className="admin-panel">
       <div className="admin-panel-head">
         <h2>Productos</h2>
-        <button className="btn btn-outline" onClick={importExcel} disabled={importing}>
-          {importing ? "Importando..." : "Importar desde Excel"}
-        </button>
+        <div className="admin-panel-actions">
+          <button className="btn btn-outline" onClick={() => setAdding(true)}>
+            <PlusIcon /> Agregar producto
+          </button>
+          <button
+            className="btn btn-outline"
+            onClick={exportXlsx}
+            title="Descargar todos los productos con sus datos para editarlos y volver a importarlos"
+          >
+            <FileDownIcon /> Exportar
+          </button>
+          <label className="btn btn-outline file-btn">
+            <FileUpIcon /> {uploading ? "Importando..." : "Importar"}
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={importFile}
+              disabled={uploading}
+              aria-label="Subir Excel con cambios masivos"
+            />
+          </label>
+        </div>
       </div>
       {error && <p style={{ color: "#b33" }}>{error}</p>}
       {message && <p style={{ color: "#155724" }}>{message}</p>}
@@ -296,14 +584,14 @@ function ProductsPanel() {
         </div>
       )}
       <div className="table-wrap">
-        <table>
+        <table className="responsive-table products-table">
           <thead>
             <tr>
               <th>Código</th>
               <th>Descripción</th>
               <th>Costo</th>
               <th>Stock viaje</th>
-              <th>Stock casa</th>
+              <th>Stock oficina</th>
               <th>Precio mayorista</th>
               <th>Ganancia/uni</th>
               <th>Activo</th>
@@ -318,9 +606,10 @@ function ProductsPanel() {
             ) : null}
             {filtered.map((product) => (
               <tr key={product.id} className={dirty.has(product.id) ? "dirty-row" : ""}>
-                <td>{product.reference}</td>
-                <td>
+                <td data-label="Código">{product.reference}</td>
+                <td data-label="Descripción">
                   <input
+                    className="products-desc"
                     value={product.description}
                     onChange={(event) => {
                       markDirty(product.id);
@@ -334,7 +623,7 @@ function ProductsPanel() {
                     }}
                   />
                 </td>
-                <td>
+                <td data-label="Costo">
                   <input
                     type="number"
                     min="0"
@@ -349,11 +638,11 @@ function ProductsPanel() {
                         )
                       );
                     }}
-                    style={{ width: "100px" }}
+                    style={{ width: "62px" }}
                     aria-label={`Costo de ${product.reference}`}
                   />
                 </td>
-                <td>
+                <td data-label="Stock viaje">
                   <div className="stock-cell">
                     <input
                       type="number"
@@ -369,14 +658,14 @@ function ProductsPanel() {
                           )
                         );
                       }}
-                      style={{ width: "72px" }}
+                      style={{ width: "50px" }}
                     />
                     {product.stock <= 0 && (
                       <span className="stock-warn">sin stock</span>
                     )}
                   </div>
                 </td>
-                <td>
+                <td data-label="Stock oficina">
                   <input
                     type="number"
                     min="0"
@@ -391,10 +680,10 @@ function ProductsPanel() {
                         )
                       );
                     }}
-                    style={{ width: "72px" }}
+                    style={{ width: "50px" }}
                   />
                 </td>
-                <td>
+                <td data-label="Precio mayorista">
                   <input
                     type="number"
                     min="0"
@@ -409,15 +698,15 @@ function ProductsPanel() {
                         )
                       );
                     }}
-                    style={{ width: "110px" }}
+                    style={{ width: "78px" }}
                   />
                 </td>
-                <td>
+                <td data-label="Ganancia/uni">
                   <span className={`profit-cell ${Number(product.priceWholesale) - Number(product.cost) < 0 ? "neg" : ""}`}>
                     {formatMoney(Number(product.priceWholesale) - Number(product.cost))}
                   </span>
                 </td>
-                <td>
+                <td data-label="Activo">
                   <input
                     type="checkbox"
                     checked={product.active}
@@ -433,16 +722,46 @@ function ProductsPanel() {
                     }}
                   />
                 </td>
-                <td>
-                  <button className="btn btn-outline" onClick={() => setTransferProduct(product)}>
-                    Trasladar
-                  </button>
+                <td data-label="Acciones">
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn-plus"
+                      title="Sumar stock (mercadería que entró)"
+                      aria-label={`Sumar stock a ${product.reference}`}
+                      onClick={() => setAddStockProduct(product)}
+                    >
+                      <PlusIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Trasladar stock entre depósitos"
+                      aria-label={`Trasladar stock de ${product.reference}`}
+                      onClick={() => setTransferProduct(product)}
+                    >
+                      <TransferIcon />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {addStockProduct && (
+        <AddStockModal
+          product={addStockProduct}
+          onClose={() => setAddStockProduct(null)}
+          onDone={async () => {
+            setAddStockProduct(null);
+            setMessage("Stock actualizado.");
+            await load();
+          }}
+          onError={(msg) => setError(msg)}
+        />
+      )}
 
       {transferProduct && (
         <TransferModal
@@ -453,6 +772,18 @@ function ProductsPanel() {
             await load();
           }}
           onError={(msg) => setError(msg)}
+        />
+      )}
+
+      {adding && (
+        <AddProductModal
+          categories={categories}
+          onClose={() => setAdding(false)}
+          onSaved={async () => {
+            setAdding(false);
+            setMessage("Producto agregado al catálogo.");
+            await load();
+          }}
         />
       )}
     </div>
@@ -479,6 +810,89 @@ function WhatsAppIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M12.04 2a9.9 9.9 0 0 0-8.45 15.1L2 22l5.03-1.56A9.9 9.9 0 1 0 12.04 2Zm5.75 14.06c-.25.7-1.44 1.33-2 1.38-.55.05-1.06.25-3.56-.74-3-1.2-4.9-4.3-5.05-4.5-.15-.2-1.2-1.6-1.2-3.05 0-1.45.77-2.16 1.04-2.46.27-.3.6-.37.8-.37.2 0 .4 0 .57.01.19.01.44-.07.68.52.25.6.84 2.05.92 2.2.07.15.12.32.02.52-.1.2-.15.32-.3.5-.15.17-.32.39-.45.52-.15.15-.31.31-.13.61.18.3.79 1.3 1.7 2.1 1.17 1.05 2.16 1.37 2.47 1.53.3.15.48.13.66-.08.18-.2.76-.88.96-1.18.2-.3.4-.25.68-.15.27.1 1.73.82 2.03.97.3.15.5.22.57.35.08.12.08.72-.17 1.42Z" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function TransferIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m17 2 4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="m7 22-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+    </svg>
+  );
+}
+
+function RotateCcwIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
+  );
+}
+
+function RotateCwIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+    </svg>
+  );
+}
+
+function FileDownIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="M12 18v-6" />
+      <path d="m9 15 3 3 3-3" />
+    </svg>
+  );
+}
+
+function FileUpIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="M12 12v6" />
+      <path d="m9 15 3-3 3 3" />
     </svg>
   );
 }
@@ -563,6 +977,10 @@ function OrderEditModal({ order, onClose, onSaved }) {
           return product ? Number(product.priceWholesale) : Number(orderItem.unitPrice);
         };
         setProducts(catalog);
+        const wholesaleFor = (item) => {
+          const product = catalog.find((p) => p.id === item.productId);
+          return product ? Number(product.priceWholesale) : Number(item.unitPrice);
+        };
         setItems(
           order.items.map((item) => ({
             productId: item.productId,
@@ -570,6 +988,7 @@ function OrderEditModal({ order, onClose, onSaved }) {
             description: item.description,
             quantity: item.quantity,
             unitPrice: priceFor(item),
+            wholesale: wholesaleFor(item),
           }))
         );
       } catch (err) {
@@ -595,7 +1014,13 @@ function OrderEditModal({ order, onClose, onSaved }) {
   }, []);
 
   const parsedDiscount = Number(discountValue);
-  const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  const subtotal = items.reduce((sum, item) => {
+    const price =
+      item.unitPrice === "" || item.unitPrice == null
+        ? Number(item.wholesale ?? 0)
+        : Number(item.unitPrice);
+    return sum + item.quantity * (Number.isFinite(price) ? price : 0);
+  }, 0);
   const discountAmount =
     discountMode === "percent" && parsedDiscount > 0
       ? Math.min(subtotal, Math.round((subtotal * parsedDiscount) / 100))
@@ -610,6 +1035,15 @@ function OrderEditModal({ order, onClose, onSaved }) {
         item.productId === productId
           ? { ...item, quantity: Math.min(MAX_QTY, Math.max(1, Math.floor(Number(quantity) || 1))) }
           : item
+      )
+    );
+
+  // Precio preferencial por unidad (mismo comportamiento que el carrito): se
+  // guarda el valor tipeado; vacío = se usa el mayorista al guardar.
+  const changePrice = (productId, unitPrice) =>
+    setItems((current) =>
+      current.map((item) =>
+        item.productId === productId ? { ...item, unitPrice } : item
       )
     );
 
@@ -648,6 +1082,7 @@ function OrderEditModal({ order, onClose, onSaved }) {
           description: product.description,
           quantity: 1,
           unitPrice: Number(product.priceWholesale),
+          wholesale: Number(product.priceWholesale),
         },
       ];
     });
@@ -670,7 +1105,15 @@ function OrderEditModal({ order, onClose, onSaved }) {
         method: "PUT",
         body: JSON.stringify({
           customerName: customerName.trim(),
-          items: items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
+          items: items.map((item) => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            // Vacío = el backend usa el mayorista vigente del producto.
+            unitPrice:
+              item.unitPrice === "" || item.unitPrice == null
+                ? undefined
+                : Number(item.unitPrice),
+          })),
           discountType: discountMode === "none" ? null : discountMode,
           discountValue: discountMode === "none" ? 0 : parsedDiscount || 0,
           notes: notes.trim(),
@@ -692,7 +1135,7 @@ function OrderEditModal({ order, onClose, onSaved }) {
         </button>
         <h2>Editar pedido #{order.id}</h2>
         <p className="transfer-product">
-          Los precios se recalculan con el precio mayorista vigente de cada producto.
+          Podés ajustar las cantidades y el precio por unidad (precio preferencial).
         </p>
         {error && <p className="form-error">{error}</p>}
         <div className="form-grid">
@@ -710,21 +1153,39 @@ function OrderEditModal({ order, onClose, onSaved }) {
         <div className="edit-items">
           {items.map((item) => (
             <div className="edit-item" key={item.productId}>
-              <div>
+              <div className="edit-item-info">
                 <div className="ref">{item.reference}</div>
                 <div className="desc">{item.description}</div>
-                <div>{formatMoney(item.unitPrice)} c/u</div>
+                <div className="edit-item-sub">
+                  {formatMoney(item.unitPrice * item.quantity)}
+                </div>
               </div>
-              <input
-                type="number"
-                name="quantity"
-                min="1"
-                max={MAX_QTY}
-                step="1"
-                value={item.quantity}
-                onChange={(event) => changeQuantity(item.productId, event.target.value)}
-                aria-label={`Cantidad de ${item.reference}`}
-              />
+              <label className="edit-item-field">
+                <span>Precio c/u</span>
+                <input
+                  type="number"
+                  name="unitPrice"
+                  min="0"
+                  step="1"
+                  inputMode="decimal"
+                  value={item.unitPrice}
+                  onChange={(event) => changePrice(item.productId, event.target.value)}
+                  aria-label={`Precio unitario de ${item.reference}`}
+                />
+              </label>
+              <label className="edit-item-field">
+                <span>Cant.</span>
+                <input
+                  type="number"
+                  name="quantity"
+                  min="1"
+                  max={MAX_QTY}
+                  step="1"
+                  value={item.quantity}
+                  onChange={(event) => changeQuantity(item.productId, event.target.value)}
+                  aria-label={`Cantidad de ${item.reference}`}
+                />
+              </label>
               <button
                 type="button"
                 className="btn btn-outline"
@@ -962,7 +1423,7 @@ function OrdersPanel({ onChange }) {
       order.discountAmount,
       order.total,
       order.notes || "",
-      new Date(order.createdAt).toLocaleString("es-AR"),
+      formatDateBa(order.createdAt),
       order.items.map((item) => `${item.reference} x${item.quantity}`).join(" | "),
     ]);
 
@@ -994,7 +1455,7 @@ function OrdersPanel({ onChange }) {
       </div>
       {error && <p style={{ color: "#b33" }}>{error}</p>}
       <div className="table-wrap">
-        <table>
+        <table className="responsive-table">
           <thead>
             <tr>
               <th>#</th>
@@ -1011,23 +1472,23 @@ function OrdersPanel({ onChange }) {
           <tbody>
             {orders.map((order) => (
               <tr key={order.id}>
-                <td>{order.id}</td>
-                <td>{order.customerName}</td>
-                <td>
+                <td data-label="Nro">{order.id}</td>
+                <td data-label="Cliente">{order.customerName}</td>
+                <td data-label="Estado">
                   <span className={`status ${order.status}`}>{STATUS_LABELS[order.status] || order.status}</span>
                 </td>
-                <td>{formatMoney(order.subtotal)}</td>
-                <td>
+                <td data-label="Subtotal">{formatMoney(order.subtotal)}</td>
+                <td data-label="Desc.">
                   {order.discountAmount > 0 ? (
                     <span className="discount-cell">− {formatMoney(order.discountAmount)}</span>
                   ) : (
                     <span className="muted-cell">—</span>
                   )}
                 </td>
-                <td>
+                <td data-label="Total">
                   <strong>{formatMoney(order.total)}</strong>
                 </td>
-                <td>
+                <td data-label="Items">
                   <ul style={{ margin: 0, paddingLeft: "1rem" }}>
                     {order.items.map((item) => (
                       <li key={item.id}>
@@ -1037,8 +1498,8 @@ function OrdersPanel({ onChange }) {
                   </ul>
                   {order.notes && <p className="order-notes">📝 {order.notes}</p>}
                 </td>
-                <td>{new Date(order.createdAt).toLocaleString("es-AR")}</td>
-                <td>
+                <td data-label="Fecha">{formatDateBa(order.createdAt)}</td>
+                <td data-label="Acciones">
                   <div className="order-actions">
                     <div className="order-actions-row">
                       <button
@@ -1062,28 +1523,58 @@ function OrdersPanel({ onChange }) {
                     </div>
                     {order.status === "pending" && (
                       <div className="order-actions-row">
-                        <button className="btn btn-outline btn-sm" onClick={() => setEditingOrder(order)}>
-                          Editar
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn-edit"
+                          title="Editar pedido"
+                          aria-label={`Editar pedido ${order.id}`}
+                          onClick={() => setEditingOrder(order)}
+                        >
+                          <PencilIcon />
                         </button>
-                        <button className="btn btn-primary btn-sm" onClick={() => deliver(order.id)}>
-                          Entregado
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn-success"
+                          title="Marcar como entregado"
+                          aria-label={`Entregar pedido ${order.id}`}
+                          onClick={() => deliver(order.id)}
+                        >
+                          <CheckIcon />
                         </button>
-                        <button className="btn btn-danger btn-sm" onClick={() => cancel(order.id)}>
-                          Cancelar
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn-danger"
+                          title="Cancelar pedido"
+                          aria-label={`Cancelar pedido ${order.id}`}
+                          onClick={() => cancel(order.id)}
+                        >
+                          <XIcon />
                         </button>
                       </div>
                     )}
                     {order.status === "cancelled" && (
                       <div className="order-actions-row">
-                        <button className="btn btn-outline btn-sm" onClick={() => restore(order.id)}>
-                          Restablecer
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn-restore"
+                          title="Restablecer pedido (volver a Pendiente)"
+                          aria-label={`Restablecer pedido ${order.id}`}
+                          onClick={() => restore(order.id)}
+                        >
+                          <RotateCcwIcon />
                         </button>
                       </div>
                     )}
                     {order.status === "delivered" && (
                       <div className="order-actions-row">
-                        <button className="btn btn-outline btn-sm" onClick={() => reopen(order.id)}>
-                          Volver a Pendiente
+                        <button
+                          type="button"
+                          className="icon-btn icon-btn-restore"
+                          title="Volver a Pendiente"
+                          aria-label={`Reabrir pedido ${order.id}`}
+                          onClick={() => reopen(order.id)}
+                        >
+                          <RotateCwIcon />
                         </button>
                       </div>
                     )}
@@ -1160,7 +1651,7 @@ function SalesReport({ ordersVersion }) {
     if (!data) return;
     const header =
       data.groupBy === "product"
-        ? ["Código", "Descripción", "Pedidos", "Unidades", "Facturado", "Costo", "Ganancia", "Stock viaje", "Stock casa"]
+        ? ["Código", "Descripción", "Pedidos", "Unidades", "Facturado", "Costo", "Ganancia", "Stock viaje", "Stock oficina"]
         : ["Cliente", "Pedidos", "Entregados", "Unidades", "Facturado", "Costo", "Ganancia"];
     const rows = data.rows.map((row) =>
       data.groupBy === "product"
@@ -1232,7 +1723,7 @@ function SalesReport({ ordersVersion }) {
                       <th>Costo</th>
                       <th>Ganancia</th>
                       <th>Stock viaje</th>
-                      <th>Stock casa</th>
+                      <th>Stock oficina</th>
                     </>
                   ) : (
                     <>

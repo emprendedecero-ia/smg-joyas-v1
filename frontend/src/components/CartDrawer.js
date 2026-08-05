@@ -11,7 +11,7 @@ import {
 import { useCart } from "@/lib/cart";
 
 export default function CartDrawer({ onClose }) {
-  const { items, updateQuantity, removeItem, clear, totalAmount } = useCart();
+  const { items, updateQuantity, updatePrice, removeItem, clear, totalAmount } = useCart();
   const [customerName, setCustomerName] = useState("");
   const [notes, setNotes] = useState("");
   const [discountMode, setDiscountMode] = useState("none"); // none | percent | amount
@@ -55,6 +55,12 @@ export default function CartDrawer({ onClose }) {
           items: items.map((item) => ({
             productId: item.productId,
             quantity: item.quantity,
+            // Precio preferencial: si el precio quedó vacío, el backend usa el
+            // mayorista vigente del producto.
+            unitPrice:
+              item.unitPrice === "" || item.unitPrice == null
+                ? undefined
+                : Number(item.unitPrice),
           })),
           discountType: discountMode === "none" ? null : discountMode,
           discountValue: discountMode === "none" ? 0 : parsedDiscount || 0,
@@ -158,33 +164,60 @@ export default function CartDrawer({ onClose }) {
             ) : (
               <>
                 <div className="cart-list">
-                  {items.map((item) => (
-                    <div className="cart-item" key={item.productId}>
-                      <div>
-                        <strong>{item.reference}</strong>
-                        <div className="cart-item-desc">{item.description}</div>
-                        <div>{formatMoney(item.priceWholesale)} c/u</div>
+                  {items.map((item) => {
+                    const unitPrice = item.unitPrice ?? item.priceWholesale;
+                    const price =
+                      unitPrice === "" || unitPrice == null
+                        ? Number(item.priceWholesale)
+                        : Number(unitPrice);
+                    return (
+                      <div className="cart-item" key={item.productId}>
+                        <div className="cart-item-main">
+                          <strong>{item.reference}</strong>
+                          <div className="cart-item-desc">{item.description}</div>
+                          <label className="cart-item-price">
+                            <span className="cart-item-price-label">Precio c/u</span>
+                            <input
+                              type="number"
+                              name="unitPrice"
+                              min="0"
+                              step="1"
+                              inputMode="decimal"
+                              value={unitPrice}
+                              onChange={(event) =>
+                                updatePrice(item.productId, event.target.value)
+                              }
+                              aria-label={`Precio unitario de ${item.reference}`}
+                            />
+                          </label>
+                        </div>
+                        <div className="cart-item-side">
+                          <input
+                            className="cart-item-qty"
+                            type="number"
+                            name="quantity"
+                            min="1"
+                            max={MAX_QTY}
+                            step="1"
+                            value={item.quantity}
+                            onChange={(event) =>
+                              updateQuantity(item.productId, Number(event.target.value))
+                            }
+                            aria-label={`Cantidad de ${item.reference}`}
+                          />
+                          <span className="cart-item-sub">
+                            {formatMoney(price * item.quantity)}
+                          </span>
+                          <button
+                            className="btn btn-outline"
+                            onClick={() => removeItem(item.productId)}
+                          >
+                            Quitar
+                          </button>
+                        </div>
                       </div>
-                      <input
-                        type="number"
-                        name="quantity"
-                        min="1"
-                        max={MAX_QTY}
-                        step="1"
-                        value={item.quantity}
-                        onChange={(event) =>
-                          updateQuantity(item.productId, Number(event.target.value))
-                        }
-                        aria-label={`Cantidad de ${item.reference}`}
-                      />
-                      <button
-                        className="btn btn-outline"
-                        onClick={() => removeItem(item.productId)}
-                      >
-                        Quitar
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {step === "checkout" && (
@@ -261,6 +294,26 @@ export default function CartDrawer({ onClose }) {
                         onChange={(event) => setNotes(event.target.value)}
                       />
                     </label>
+
+                    {/* Totales dentro del contenido scrolleable: aunque el
+                        teclado del celular tape el pie, el total final siempre
+                        se puede ver bajando la lista. */}
+                    <div className="cart-totals checkout-totals">
+                      <div className="cart-line">
+                        <span>Subtotal</span>
+                        <span>{formatMoney(subtotal)}</span>
+                      </div>
+                      {discountAmount > 0 && (
+                        <div className="cart-line discount">
+                          <span>Descuento ({discountLabel})</span>
+                          <span>− {formatMoney(discountAmount)}</span>
+                        </div>
+                      )}
+                      <div className="cart-total">
+                        <span>Total final</span>
+                        <span>{formatMoney(finalTotal)}</span>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -304,26 +357,17 @@ export default function CartDrawer({ onClose }) {
           ) : (
             items.length > 0 && (
               <>
-                <div className="cart-totals">
-                  {step === "checkout" ? (
-                    <>
-                      <div className="cart-line">
-                        <span>Subtotal</span>
-                        <span>{formatMoney(subtotal)}</span>
-                      </div>
-                      {discountAmount > 0 && (
-                        <div className="cart-line discount">
-                          <span>Descuento ({discountLabel})</span>
-                          <span>− {formatMoney(discountAmount)}</span>
-                        </div>
-                      )}
-                    </>
-                  ) : null}
-                  <div className="cart-total">
-                    <span>Total{step === "checkout" ? " final" : ""}</span>
-                    <span>{formatMoney(step === "checkout" ? finalTotal : subtotal)}</span>
+                {step === "checkout" ? (
+                  <div className="drawer-total-line">
+                    <span>Total final</span>
+                    <strong>{formatMoney(finalTotal)}</strong>
                   </div>
-                </div>
+                ) : (
+                  <div className="cart-total">
+                    <span>Total</span>
+                    <span>{formatMoney(subtotal)}</span>
+                  </div>
+                )}
                 <div className="modal-actions">
                   {step === "cart" ? (
                     <button className="btn btn-primary block" onClick={() => setStep("checkout")}>

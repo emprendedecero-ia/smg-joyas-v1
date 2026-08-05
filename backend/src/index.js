@@ -1,12 +1,21 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
+import multipart from '@fastify/multipart';
 import jwt from 'jsonwebtoken';
 import PDFDocument from 'pdfkit';
+import XLSX from 'xlsx';
 import fs from 'fs';
 import path from 'path';
 import { pool, query, withTransaction } from './db.js';
-import { MAX_PER_ITEM, parseProductsFromExcel, resolveExcelPath, seedDatabase } from './seed.js';
+import {
+  MAX_PER_ITEM,
+  parseProductRows,
+  parseProductsFromExcel,
+  resolveExcelPath,
+  seedDatabase,
+  slugify,
+} from './seed.js';
 
 function formatMoney(value) {
   return new Intl.NumberFormat('es-AR', {
@@ -14,6 +23,30 @@ function formatMoney(value) {
     currency: 'ARS',
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+// Fechas siempre en hora de Buenos Aires (UTC-3), aunque el servidor corra en
+// UTC: los presupuestos y los pedidos deben reflejar la hora local argentina.
+const BA_TZ = 'America/Argentina/Buenos_Aires';
+
+function formatBaDate(date) {
+  return new Intl.DateTimeFormat('es-AR', {
+    dateStyle: 'long',
+    timeStyle: 'short',
+    timeZone: BA_TZ,
+  }).format(date);
+}
+
+// '2026-08-05' en Buenos Aires, para nombres de archivo.
+function baYmd(date) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BA_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const get = (type) => parts.find((part) => part.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 // Migraciones idempotentes: se ejecutan en cada arranque para que la base
@@ -97,11 +130,8 @@ function buildInvoicePdf(order, items) {
       .fontSize(9)
       .text(`N.º ${String(order.id).padStart(5, '0')}`, rightEdge - 120, 58, { width: 120, align: 'right' });
 
-    // Datos del pedido
-    const dateStr = new Intl.DateTimeFormat('es-AR', {
-      dateStyle: 'long',
-      timeStyle: 'short',
-    }).format(new Date(order.created_at));
+    // Datos del pedido (fecha y hora de Buenos Aires)
+    const dateStr = formatBaDate(new Date(order.created_at));
 
     let y = 136;
     doc.fillColor(MUTED).font('Helvetica').fontSize(9).text('CLIENTE', left, y);
@@ -312,6 +342,9 @@ function authHook(request, reply, done) {
 
 await app.register(cors, { origin: CORS_ORIGIN, credentials: true });
 
+// Upload del Excel para el import de productos (cambios masivos).
+await app.register(multipart, { limits: { fileSize: 20 * 1024 * 1024 } });
+
 const assetsCandidates = [
   process.env.ASSETS_DIR,
   '/app/products-assets',
@@ -438,7 +471,17 @@ app.post('/api/orders', async (request, reply) => {
 
         // Política de stock flexible: se permite vender aunque el stock viaje
         // esté en 0 o negativo (queda en negativo y se muestra como aviso).
-        const unitPrice = Number(product.price_wholesale);
+        // Precio preferencial: el carrito permite ajustar el precio por unidad
+        // para clientes con acuerdos especiales; si no llega, se usa el
+        // mayorista vigente del producto.
+        let unitPrice = Number(product.price_wholesale);
+        if (item.unitPrice !== undefined && item.unitPrice !== null && String(item.unitPrice).trim() !== '') {
+          const custom = Number(item.unitPrice);
+          if (!Number.isFinite(custom) || custom < 0) {
+            throw Object.assign(new Error('Precio unitario inválido'), { statusCode: 400 });
+          }
+          unitPrice = custom;
+        }
         const lineTotal = unitPrice * quantity;
         subtotal += lineTotal;
 
@@ -582,7 +625,13 @@ app.put('/api/orders/:id', { preHandler: authHook }, async (request, reply) => {
           throw Object.assign(new Error('Producto no encontrado'), { statusCode: 404 });
         }
 
-        const unitPrice = Number(product.price_wholesale);
+        const unitPrice =
+          item.unitPrice !== undefined && item.unitPrice !== null && String(item.unitPrice).trim() !== ''
+            ? Number(item.unitPrice)
+            : Number(product.price_wholesale);
+        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+          throw Object.assign(new Error('Precio unitario inválido'), { statusCode: 400 });
+        }
         const lineTotal = unitPrice * quantity;
         subtotal += lineTotal;
         lineItems.push({ product, quantity, unitPrice, lineTotal });
@@ -729,9 +778,13 @@ app.get('/api/orders/:id/invoice', async (request, reply) => {
 
   try {
     const pdf = await buildInvoicePdf(order, items);
+    const baDate = baYmd(new Date(order.created_at));
     return reply
       .type('application/pdf')
-      .header('Content-Disposition', `attachment; filename="presupuesto-SMG-${orderId}.pdf"`)
+      .header(
+        'Content-Disposition',
+        `attachment; filename="presupuesto-SMG-${String(orderId).padStart(4, '0')}-${baDate}.pdf"`
+      )
       .send(pdf);
   } catch (error) {
     app.log.error(error);
@@ -1168,6 +1221,93 @@ app.get('/api/admin/products', { preHandler: authHook }, async () => {
   return rows.map((row) => formatProduct(row, { withCost: true }));
 });
 
+// Alta manual de un producto (no pasa por el Excel): útil para piezas nuevas
+// o códigos puntuales. Crea la categoría si no existe y queda activo.
+app.post('/api/admin/products', { preHandler: authHook }, async (request, reply) => {
+  const {
+    reference,
+    description,
+    category,
+    stock,
+    stockCasa,
+    cost,
+    priceWholesale,
+    priceRetail,
+    priceMl,
+  } = request.body || {};
+
+  const ref = String(reference || '').trim().toUpperCase();
+  if (!ref) {
+    return reply.code(400).send({ error: 'El código es obligatorio' });
+  }
+  if (ref.length > 50) {
+    return reply.code(400).send({ error: 'El código no puede superar 50 caracteres' });
+  }
+
+  const numbers = {
+    stock: Number(stock) || 0,
+    stockCasa: Number(stockCasa) || 0,
+    cost: Number(cost) || 0,
+    priceWholesale: Number(priceWholesale) || 0,
+    priceRetail: Number(priceRetail) || 0,
+    priceMl: Number(priceMl) || 0,
+  };
+  for (const [key, value] of Object.entries(numbers)) {
+    if (!Number.isFinite(value) || value < 0) {
+      return reply.code(400).send({ error: `El campo ${key} no puede ser negativo` });
+    }
+  }
+
+  const categoryName = String(category || '').trim() || 'SIN CATEGORIA';
+
+  try {
+    const product = await withTransaction(async (client) => {
+      const { rows: categoryRows } = await client.query(
+        `INSERT INTO categories (name, slug) VALUES ($1, $2)
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id`,
+        [categoryName, categoryName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-')]
+      );
+
+      const { rows } = await client.query(
+        `INSERT INTO products (
+          reference, category_id, description, stock, stock_casa, cost,
+          price_wholesale, price_retail, price_ml, active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
+        RETURNING *`,
+        [
+          ref,
+          categoryRows[0].id,
+          String(description || '').trim(),
+          Math.floor(numbers.stock),
+          Math.floor(numbers.stockCasa),
+          numbers.cost,
+          numbers.priceWholesale,
+          numbers.priceRetail,
+          numbers.priceMl,
+        ]
+      );
+
+      return rows[0];
+    });
+
+    const { rows: full } = await query(
+      `SELECT p.*, c.name AS category_name, c.slug AS category_slug
+       FROM products p
+       JOIN categories c ON c.id = p.category_id
+       WHERE p.id = $1`,
+      [product.id]
+    );
+
+    return reply.code(201).send(formatProduct(full[0], { withCost: true }));
+  } catch (error) {
+    if (error.code === '23505') {
+      return reply.code(400).send({ error: `Ya existe un producto con el código ${ref}` });
+    }
+    return reply.code(500).send({ error: error.message || 'Error al crear el producto' });
+  }
+});
+
 app.put('/api/admin/products/:id', { preHandler: authHook }, async (request, reply) => {
   const id = Number(request.params.id);
   const {
@@ -1283,13 +1423,20 @@ app.post('/api/admin/products/:id/transfer', { preHandler: authHook }, async (re
     return reply.code(400).send({ error: 'Cantidad inválida' });
   }
 
-  if (!['casa', 'viaje'].includes(from) || !['casa', 'viaje'].includes(to) || from === to) {
+  // El depósito de reposición se llama "oficina" (antes "casa"). Se acepta
+  // también el valor viejo para no romper clientes existentes.
+  const normalizeDeposit = (deposit) =>
+    deposit === 'casa' || deposit === 'oficina' ? 'oficina' : deposit;
+  const fromNorm = normalizeDeposit(from);
+  const toNorm = normalizeDeposit(to);
+
+  if (!['oficina', 'viaje'].includes(fromNorm) || !['oficina', 'viaje'].includes(toNorm) || fromNorm === toNorm) {
     return reply.code(400).send({ error: 'Origen o destino de traslado inválido' });
   }
 
-  const fromColumn = from === 'casa' ? 'stock_casa' : 'stock';
-  const toColumn = to === 'casa' ? 'stock_casa' : 'stock';
-  const fromLabel = from === 'casa' ? 'casa' : 'viaje';
+  const fromColumn = fromNorm === 'oficina' ? 'stock_casa' : 'stock';
+  const toColumn = toNorm === 'oficina' ? 'stock_casa' : 'stock';
+  const fromLabel = fromNorm;
 
   try {
     const product = await withTransaction(async (client) => {
@@ -1330,6 +1477,191 @@ app.post('/api/admin/products/:id/transfer', { preHandler: authHook }, async (re
   } catch (error) {
     const statusCode = error.statusCode || 500;
     return reply.code(statusCode).send({ error: error.message || 'Error al trasladar stock' });
+  }
+});
+
+// Sumar stock (mercadería nueva que entra): con un "+" desde el listado se
+// registra lo que llegó, sin tener que editar el input a mano.
+app.post('/api/admin/products/:id/add-stock', { preHandler: authHook }, async (request, reply) => {
+  const productId = Number(request.params.id);
+  const { deposit, quantity } = request.body || {};
+
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty < 1) {
+    return reply.code(400).send({ error: 'Cantidad inválida' });
+  }
+
+  const normalized = deposit === 'casa' || deposit === 'oficina' ? 'oficina' : deposit;
+  if (!['oficina', 'viaje'].includes(normalized)) {
+    return reply.code(400).send({ error: 'Depósito inválido (oficina o viaje)' });
+  }
+
+  const column = normalized === 'oficina' ? 'stock_casa' : 'stock';
+
+  try {
+    const product = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        'SELECT * FROM products WHERE id = $1 FOR UPDATE',
+        [productId]
+      );
+      if (!rows[0]) {
+        throw Object.assign(new Error('Producto no encontrado'), { statusCode: 404 });
+      }
+
+      const { rows: updatedRows } = await client.query(
+        `UPDATE products
+         SET ${column} = ${column} + $1, updated_at = NOW()
+         WHERE id = $2
+         RETURNING *`,
+        [qty, productId]
+      );
+      return updatedRows[0];
+    });
+
+    return {
+      id: product.id,
+      reference: product.reference,
+      stock: Number(product.stock),
+      stockCasa: Number(product.stock_casa),
+    };
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    return reply.code(statusCode).send({ error: error.message || 'Error al sumar stock' });
+  }
+});
+
+// Exporta todo el catálogo a un Excel editable (cambios masivos de precios,
+// descripciones, stocks...). Las columnas coinciden con las que entiende el
+// import, así el mismo archivo se puede volver a subir actualizado.
+app.get('/api/admin/products/export', { preHandler: authHook }, async (request, reply) => {
+  try {
+    const { rows } = await query(
+      `SELECT p.*, c.name AS category_name
+       FROM products p
+       JOIN categories c ON c.id = p.category_id
+       ORDER BY p.reference`
+    );
+
+    const data = rows.map((product) => ({
+      'Cod interno': product.reference,
+      'Categoria': product.category_name,
+      'Descripción': product.description,
+      'Costo': Number(product.cost ?? 0),
+      'REDONDEO MAYORISTA': Number(product.price_wholesale),
+      'REDONDEO MINORISTA': Number(product.price_retail ?? 0),
+      'REDONDEO ML': Number(product.price_ml ?? 0),
+      'Stock viaje': Number(product.stock ?? 0),
+      'Stock oficina': Number(product.stock_casa ?? 0),
+      'Activo': product.active ? 'SÍ' : 'NO',
+    }));
+
+    const sheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Productos');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    return reply
+      .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .header('Content-Disposition', `attachment; filename="productos-${baYmd(new Date())}.xlsx"`)
+      .send(buffer);
+  } catch (error) {
+    return reply.code(500).send({ error: error.message || 'Error al exportar productos' });
+  }
+});
+
+// Importa un Excel subido (editado a partir del export) y aplica los cambios
+// masivos: alta de productos nuevos, actualización de precios/descripciones/
+// stocks y el estado Activo. El stock de oficina y el estado solo se tocan si
+// el archivo trae esas columnas; el historial de pedidos no se modifica.
+app.post('/api/admin/products/import', { preHandler: authHook }, async (request, reply) => {
+  try {
+    const file = await request.file();
+    if (!file) {
+      return reply.code(400).send({ error: 'Subí un archivo Excel (.xlsx o .xls)' });
+    }
+
+    const ext = path.extname(file.filename || '').toLowerCase();
+    if (!['.xlsx', '.xls'].includes(ext)) {
+      return reply.code(400).send({ error: 'El archivo debe ser .xlsx o .xls' });
+    }
+
+    const chunks = [];
+    for await (const chunk of file.file) chunks.push(chunk);
+    const buffer = Buffer.concat(chunks);
+
+    if (buffer.length === 0) {
+      return reply.code(400).send({ error: 'El archivo está vacío' });
+    }
+
+    let workbook;
+    try {
+      workbook = XLSX.read(buffer);
+    } catch {
+      return reply.code(400).send({ error: 'Archivo inválido: no se pudo leer como Excel (.xlsx o .xls)' });
+    }
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    const products = parseProductRows(rows, null);
+
+    if (products.length === 0) {
+      return reply.code(400).send({
+        error: 'El archivo no tiene productos válidos. La columna de códigos debe llamarse "Cod interno".',
+      });
+    }
+
+    // Si el archivo repite códigos, la última fila gana (contadores claros).
+    const uniqueProducts = [...new Map(products.map((p) => [p.reference, p])).values()];
+
+    let created = 0;
+    let updated = 0;
+
+    await withTransaction(async (client) => {
+      for (const product of uniqueProducts) {
+        const { rows: categoryRows } = await client.query(
+          `INSERT INTO categories (name, slug) VALUES ($1, $2)
+           ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+          [product.category, slugify(product.category)]
+        );
+
+        const { rows: inserted } = await client.query(
+          `INSERT INTO products (
+            reference, category_id, description, stock, stock_casa, cost,
+            price_wholesale, price_retail, price_ml, active
+          ) VALUES ($1, $2, $3, $4, COALESCE($5, 0), $6, $7, $8, $9, COALESCE($10, TRUE))
+          ON CONFLICT (reference) DO UPDATE SET
+            category_id = EXCLUDED.category_id,
+            description = EXCLUDED.description,
+            stock = EXCLUDED.stock,
+            stock_casa = COALESCE(EXCLUDED.stock_casa, products.stock_casa),
+            cost = EXCLUDED.cost,
+            price_wholesale = EXCLUDED.price_wholesale,
+            price_retail = EXCLUDED.price_retail,
+            price_ml = EXCLUDED.price_ml,
+            active = COALESCE(EXCLUDED.active, products.active),
+            updated_at = NOW()
+          RETURNING (xmax = 0) AS inserted`,
+          [
+            product.reference,
+            categoryRows[0].id,
+            product.description,
+            product.stock,
+            product.stockCasa,
+            product.cost,
+            product.priceWholesale,
+            product.priceRetail,
+            product.priceMl,
+            product.active,
+          ]
+        );
+
+        if (inserted[0].inserted) created += 1;
+        else updated += 1;
+      }
+    });
+
+    return { imported: uniqueProducts.length, created, updated };
+  } catch (error) {
+    return reply.code(500).send({ error: error.message || 'Error al importar productos' });
   }
 });
 

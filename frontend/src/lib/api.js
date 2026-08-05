@@ -49,6 +49,17 @@ export function formatMoney(value) {
   }).format(value);
 }
 
+// Fecha y hora siempre en Buenos Aires (UTC-3), sin depender de la zona del
+// dispositivo: los presupuestos y pedidos se registran con la hora argentina.
+export function formatDateBa(date) {
+  if (!date) return "";
+  return new Intl.DateTimeFormat("es-AR", {
+    dateStyle: "long",
+    timeStyle: "short",
+    timeZone: "America/Argentina/Buenos_Aires",
+  }).format(new Date(date));
+}
+
 export const MAX_QTY = 1000;
 
 export function invoiceUrl(orderId) {

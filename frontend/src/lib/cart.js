@@ -40,6 +40,7 @@ export function CartProvider({ children }) {
             reference: product.reference,
             description: product.description,
             priceWholesale: product.priceWholesale,
+            unitPrice: product.priceWholesale,
             imageUrl: product.imageUrl,
             quantity: qty,
           },
@@ -56,6 +57,18 @@ export function CartProvider({ children }) {
       );
     };
 
+    // Precio preferencial por producto: se puede ajustar el precio unitario
+    // para clientes con acuerdos especiales (el carrito lo manda al pedido).
+    // Se guarda el valor tal como se tipea (puede quedar vacío mientras se
+    // edita); vacío = se usa el mayorista al confirmar.
+    const updatePrice = (productId, unitPrice) => {
+      setItems((current) =>
+        current.map((item) =>
+          item.productId === productId ? { ...item, unitPrice } : item
+        )
+      );
+    };
+
     const removeItem = (productId) => {
       setItems((current) => current.filter((item) => item.productId !== productId));
     };
@@ -63,15 +76,18 @@ export function CartProvider({ children }) {
     const clear = () => setItems([]);
 
     const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
-    const totalAmount = items.reduce(
-      (sum, item) => sum + item.quantity * item.priceWholesale,
-      0
-    );
+    const totalAmount = items.reduce((sum, item) => {
+      const raw = item.unitPrice ?? item.priceWholesale;
+      const price =
+        raw === "" || raw == null ? Number(item.priceWholesale) : Number(raw);
+      return sum + item.quantity * (Number.isFinite(price) ? price : 0);
+    }, 0);
 
     return {
       items,
       addItem,
       updateQuantity,
+      updatePrice,
       removeItem,
       clear,
       totalItems,

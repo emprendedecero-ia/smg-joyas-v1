@@ -30,9 +30,14 @@ Al iniciar, la API importa automáticamente `bijou.xlsx` si la base está vacía
 Los precios que se muestran en la página son los **redondeados** del catálogo
 (`REDONDEO MAYORISTA`).
 
-**Admin → Productos → Importar desde Excel** reemplaza el catálogo con
-`bijou.xlsx`: actualiza/inserta todos los productos del archivo, los reactiva y
-**desactiva los que ya no figuren** (el historial de pedidos no se toca).
+**Admin → Productos → Exportar / Importar** permite hacer cambios masivos sin
+Excel en el servidor: **Exportar** baja todos los productos con sus datos
+(`Cod interno`, categoría, descripción, costo, precios redondeados, stocks y
+estado Activo) en un `.xlsx`; se edita en cualquier planilla y se vuelve a subir
+con **Importar**, que aplica las modificaciones, da de alta los códigos nuevos
+y actualiza los existentes (el historial de pedidos no se toca). El catálogo
+vive en la base: la ABM (Agregar producto, editar campos, estado Activo) es la
+vía principal y el Excel solo para cambios masivos.
 
 ## Flujo de pedidos
 
@@ -70,8 +75,8 @@ Stack recomendado para producción sin costo: **Vercel** (frontend), **Render**
 imagen Docker del backend (no dependen de volúmenes).
 
 1. **Neon** → crear proyecto, copiar `DATABASE_URL`, ejecutar `db/init.sql` en la
-   consola SQL y dejar que el seed importe `bijou.xlsx` (o usar
-   Admin → Importar desde Excel).
+   consola SQL y dejar que el seed importe `bijou.xlsx` la primera vez. Después
+   el catálogo se administra desde Admin → Productos (ABM + Exportar/Importar).
 
 2. **Render** → New Web Service → conectar GitHub y elegir el repo. Render
    detecta el `Dockerfile` de la raíz. Setear las variables:
