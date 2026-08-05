@@ -896,7 +896,7 @@ button {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 1.4rem 1.5rem;
+  padding: 1.4rem 1.5rem max(1.4rem, env(safe-area-inset-bottom));
 }
 
 .drawer-footer {
@@ -1060,23 +1060,6 @@ button {
   border-top: 1px solid var(--line);
 }
 
-/* Total compacto del footer del carrito (siempre visible sobre el teclado) */
-
-.drawer-total-line {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-  font-size: 0.85rem;
-  color: var(--ink-soft);
-}
-
-.drawer-total-line strong {
-  font-family: var(--font-display);
-  font-size: 1.35rem;
-  color: var(--gold-dark);
-}
-
 /* Totales dentro del checkout (al final del formulario scrolleable) */
 
 .checkout-totals {
@@ -1091,6 +1074,13 @@ button {
   margin-top: 0.6rem;
   padding-top: 0.6rem;
   border-top: 1px solid var(--line);
+}
+
+/* Volver / Confirmar al final del scroll del checkout: separados del total
+   para que se revisen los datos antes de confirmar. */
+
+.checkout-actions {
+  margin-top: 1.2rem;
 }
 
 .invoice-hint {

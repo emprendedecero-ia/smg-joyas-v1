@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   MAX_QTY,
   buildWhatsAppUrl,
@@ -21,6 +21,15 @@ export default function CartDrawer({ onClose }) {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [order, setOrder] = useState(null);
+  const bodyRef = useRef(null);
+
+  // Al pasar a "Confirmar pedido" se arranca desde arriba del scroll, así se
+  // ve primero el campo del cliente (y se revisa todo antes de confirmar).
+  useEffect(() => {
+    if (step === "checkout" && bodyRef.current) {
+      bodyRef.current.scrollTop = 0;
+    }
+  }, [step]);
 
   const subtotal = totalAmount;
   const parsedDiscount = Number(discountValue);
@@ -155,7 +164,7 @@ export default function CartDrawer({ onClose }) {
             {error && <p className="form-error" style={{ marginTop: "0.9rem" }}>{error}</p>}
           </div>
         ) : (
-          <div className="drawer-body">
+          <div className="drawer-body" ref={bodyRef}>
             {items.length === 0 ? (
               <div className="empty">
                 <p className="empty-title">Tu carrito está vacío</p>
@@ -314,84 +323,104 @@ export default function CartDrawer({ onClose }) {
                         <span>{formatMoney(finalTotal)}</span>
                       </div>
                     </div>
-                  </div>
-                )}
 
-                {error && <p className="form-error" style={{ marginTop: "0.9rem" }}>{error}</p>}
-              </>
-            )}
-          </div>
-        )}
+                    {/* El error se muestra junto a la acción, al pie del
+                        scroll: si falta el cliente o el pedido falla, se ve
+                        al lado del botón Confirmar. */}
+                    {error && (
+                      <p className="form-error" style={{ margin: 0 }} aria-live="polite">
+                        {error}
+                      </p>
+                    )}
 
-        <div className="drawer-footer">
-          {step === "success" && order ? (
-            <>
-              <div className="cart-totals">
-                <div className="cart-line">
-                  <span>Subtotal</span>
-                  <span>{formatMoney(order.subtotal)}</span>
-                </div>
-                {order.discountAmount > 0 && (
-                  <div className="cart-line discount">
-                    <span>Descuento</span>
-                    <span>− {formatMoney(order.discountAmount)}</span>
-                  </div>
-                )}
-                <div className="cart-total">
-                  <span>Total</span>
-                  <span>{formatMoney(order.total)}</span>
-                </div>
-              </div>
-              <div className="modal-actions">
-                <button className="btn btn-outline" onClick={openWhatsApp}>
-                  WhatsApp
-                </button>
-                <button className="btn btn-primary" disabled={downloading} onClick={downloadInvoice}>
-                  {downloading ? "Generando..." : "Descargar presupuesto PDF"}
-                </button>
-              </div>
-              <p className="invoice-hint">
-                Adjuntá el presupuesto descargado al chat de WhatsApp para enviarlo al cliente.
-              </p>
-            </>
-          ) : (
-            items.length > 0 && (
-              <>
-                {step === "checkout" ? (
-                  <div className="drawer-total-line">
-                    <span>Total final</span>
-                    <strong>{formatMoney(finalTotal)}</strong>
-                  </div>
-                ) : (
-                  <div className="cart-total">
-                    <span>Total</span>
-                    <span>{formatMoney(subtotal)}</span>
-                  </div>
-                )}
-                <div className="modal-actions">
-                  {step === "cart" ? (
-                    <button className="btn btn-primary block" onClick={() => setStep("checkout")}>
-                      Continuar
-                    </button>
-                  ) : (
-                    <>
-                      <button className="btn btn-outline" onClick={() => setStep("cart")}>
+                    {/* Volver y Confirmar van al final del scroll: se revisan
+                        los datos y el total antes de confirmar, sin barra fija
+                        que tape el teclado o la lista. */}
+                    <div className="modal-actions checkout-actions">
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={() => {
+                          setError("");
+                          setStep("cart");
+                        }}
+                      >
                         Volver
                       </button>
                       <button
+                        type="button"
                         className="btn btn-primary"
                         disabled={loading}
                         onClick={handleCheckout}
                       >
                         {loading ? "Enviando..." : "Confirmar pedido"}
                       </button>
-                    </>
-                  )}
-                </div>
+                    </div>
+                  </div>
+                )}
               </>
-            )
-          )}
-        </div>
+            )}
+          </div>
+        )}
+
+        {/* En el paso "Confirmar pedido" no hay barra fija: el total final y
+            los botones van al final del contenido scrolleable (checkout-actions
+            dentro del body), así el teclado y la lista no quedan tapados. */}
+        {step !== "checkout" && (
+          <div className="drawer-footer">
+            {step === "success" && order ? (
+              <>
+                <div className="cart-totals">
+                  <div className="cart-line">
+                    <span>Subtotal</span>
+                    <span>{formatMoney(order.subtotal)}</span>
+                  </div>
+                  {order.discountAmount > 0 && (
+                    <div className="cart-line discount">
+                      <span>Descuento</span>
+                      <span>− {formatMoney(order.discountAmount)}</span>
+                    </div>
+                  )}
+                  <div className="cart-total">
+                    <span>Total</span>
+                    <span>{formatMoney(order.total)}</span>
+                  </div>
+                </div>
+                <div className="modal-actions">
+                  <button className="btn btn-outline" onClick={openWhatsApp}>
+                    WhatsApp
+                  </button>
+                  <button className="btn btn-primary" disabled={downloading} onClick={downloadInvoice}>
+                    {downloading ? "Generando..." : "Descargar presupuesto PDF"}
+                  </button>
+                </div>
+                <p className="invoice-hint">
+                  Adjuntá el presupuesto descargado al chat de WhatsApp para enviarlo al cliente.
+                </p>
+              </>
+            ) : (
+              items.length > 0 && (
+                <>
+                  <div className="cart-total">
+                    <span>Total</span>
+                    <span>{formatMoney(subtotal)}</span>
+                  </div>
+                  <div className="modal-actions">
+                    <button
+                      className="btn btn-primary block"
+                      onClick={() => {
+                        setError("");
+                        setStep("checkout");
+                      }}
+                    >
+                      Continuar
+                    </button>
+                  </div>
+                </>
+              )
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
