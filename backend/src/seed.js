@@ -3,7 +3,7 @@ import path from 'path';
 import XLSX from 'xlsx';
 import { pool, query } from './db.js';
 
-const MAX_PER_ITEM = 50;
+const MAX_PER_ITEM = 1000;
 
 function slugify(name) {
   return name

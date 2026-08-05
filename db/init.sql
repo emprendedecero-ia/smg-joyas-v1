@@ -42,6 +42,7 @@ CREATE TABLE orders (
   notes TEXT NOT NULL DEFAULT '',
   stock_applied BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   delivered_at TIMESTAMPTZ
 );
 
@@ -51,7 +52,9 @@ CREATE TABLE order_items (
   product_id INTEGER NOT NULL REFERENCES products(id),
   product_reference VARCHAR(50) NOT NULL,
   product_description TEXT NOT NULL,
-  quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 50),
+  -- Mantener el límite sincronizado con MAX_PER_ITEM en backend/src/seed.js
+  -- (la migración en backend/src/index.js re-crea este CHECK en cada arranque).
+  quantity INTEGER NOT NULL CHECK (quantity > 0 AND quantity <= 1000),
   unit_price NUMERIC(12, 2) NOT NULL,
   line_total NUMERIC(12, 2) NOT NULL
 );

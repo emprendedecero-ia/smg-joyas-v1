@@ -78,13 +78,13 @@ export default function CartDrawer({ onClose }) {
     try {
       const response = await fetch(invoiceUrl(order.id));
       if (!response.ok) {
-        throw new Error("No se pudo generar la factura");
+        throw new Error("No se pudo generar el presupuesto");
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `factura-SMG-${order.id}.pdf`;
+      link.download = `presupuesto-SMG-${order.id}.pdf`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -130,8 +130,8 @@ export default function CartDrawer({ onClose }) {
           <div className="drawer-body">
             <div className="success-badge">✓</div>
             <p style={{ margin: "0 0 1.2rem", textAlign: "center" }}>
-              Pedido <strong>#{order.id}</strong> registrado. Descargá la factura para
-              entregarla o adjuntarla en WhatsApp.
+              Pedido <strong>#{order.id}</strong> registrado. Descargá el presupuesto para
+              entregarlo o adjuntarlo en WhatsApp.
             </p>
             <div className="cart-list">
               {order.items.map((item, index) => (
@@ -170,6 +170,7 @@ export default function CartDrawer({ onClose }) {
                         name="quantity"
                         min="1"
                         max={MAX_QTY}
+                        step="1"
                         value={item.quantity}
                         onChange={(event) =>
                           updateQuantity(item.productId, Number(event.target.value))
@@ -293,11 +294,11 @@ export default function CartDrawer({ onClose }) {
                   WhatsApp
                 </button>
                 <button className="btn btn-primary" disabled={downloading} onClick={downloadInvoice}>
-                  {downloading ? "Generando..." : "Descargar factura PDF"}
+                  {downloading ? "Generando..." : "Descargar presupuesto PDF"}
                 </button>
               </div>
               <p className="invoice-hint">
-                Adjuntá la factura descargada al chat de WhatsApp para enviarla al cliente.
+                Adjuntá el presupuesto descargado al chat de WhatsApp para enviarlo al cliente.
               </p>
             </>
           ) : (

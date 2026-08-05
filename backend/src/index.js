@@ -32,6 +32,17 @@ async function migrate() {
   // (política flexible), por eso se elimina el CHECK (stock >= 0).
   await query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_casa INTEGER NOT NULL DEFAULT 0`);
   await query(`ALTER TABLE products DROP CONSTRAINT IF EXISTS products_stock_check`);
+
+  // Timestamp de última modificación del pedido (para la edición admin).
+  await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+
+  // Límite de unidades por producto en un pedido (se amplió de 50 a un valor
+  // mayor). Se re-crea el CHECK en cada arranque para bases existentes.
+  await query(`ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_quantity_check`);
+  await query(`
+    ALTER TABLE order_items ADD CONSTRAINT order_items_quantity_check
+      CHECK (quantity > 0 AND quantity <= ${MAX_PER_ITEM})
+  `);
 }
 
 function buildInvoicePdf(order, items) {
@@ -69,13 +80,13 @@ function buildInvoicePdf(order, items) {
       .fillColor(MUTED)
       .font('Helvetica')
       .fontSize(10)
-      .text('Catálogo mayorista · Ventas', left, 62);
+      .text('Catálogo mayorista · Presupuesto', left, 62);
 
     doc
       .fillColor(GOLD_DARK)
       .font('Helvetica-Bold')
       .fontSize(15)
-      .text('FACTURA', rightEdge - 120, 32, { width: 120, align: 'right' });
+      .text('PRESUPUESTO', rightEdge - 120, 32, { width: 120, align: 'right' });
     doc
       .fillColor(MUTED)
       .font('Helvetica')
@@ -239,7 +250,7 @@ function buildInvoicePdf(order, items) {
       .font('Helvetica')
       .fontSize(8)
       .text(
-        'Documento generado por SMG Joyería — detalle de venta mayorista. No es comprobante fiscal.',
+        'Documento generado por SMG Joyería — presupuesto de venta mayorista. No es comprobante fiscal.',
         left,
         doc.page.height - 56,
         { width: contentW, align: 'center' }
@@ -492,6 +503,150 @@ app.post('/api/orders', async (request, reply) => {
   }
 });
 
+// Edición de pedidos pendientes: permite ajustar cantidades, agregar/quitar
+// productos y modificar cliente, descuento y notas. Los precios se recalculan
+// con el precio mayorista vigente del producto (herramienta de presupuesto).
+app.put('/api/orders/:id', { preHandler: authHook }, async (request, reply) => {
+  const orderId = Number(request.params.id);
+  const { customerName, items, discountType, discountValue, notes } = request.body || {};
+
+  if (!customerName?.trim()) {
+    return reply.code(400).send({ error: 'El nombre del cliente es obligatorio' });
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return reply.code(400).send({ error: 'El pedido debe tener al menos un producto' });
+  }
+
+  const discount = discountType || null;
+  if (discount !== null && !['percent', 'amount'].includes(discount)) {
+    return reply.code(400).send({ error: 'Tipo de descuento inválido' });
+  }
+
+  const discountValueNum = discount === null ? 0 : Number(discountValue) || 0;
+  if (discount !== null && (!Number.isFinite(discountValueNum) || discountValueNum < 0)) {
+    return reply.code(400).send({ error: 'Valor de descuento inválido' });
+  }
+
+  try {
+    const order = await withTransaction(async (client) => {
+      const { rows: orderRows } = await client.query(
+        'SELECT * FROM orders WHERE id = $1 FOR UPDATE',
+        [orderId]
+      );
+      const current = orderRows[0];
+      if (!current) {
+        throw Object.assign(new Error('Pedido no encontrado'), { statusCode: 404 });
+      }
+      if (current.status !== 'pending') {
+        throw Object.assign(new Error('Solo se pueden editar pedidos pendientes'), { statusCode: 400 });
+      }
+
+      let subtotal = 0;
+      const lineItems = [];
+      const seen = new Set();
+
+      for (const item of items) {
+        const quantity = Number(item.quantity);
+        const productId = Number(item.productId);
+
+        if (!productId || !Number.isInteger(quantity) || quantity < 1) {
+          throw Object.assign(new Error('Cantidad inválida'), { statusCode: 400 });
+        }
+        if (quantity > MAX_PER_ITEM) {
+          throw Object.assign(new Error(`Máximo ${MAX_PER_ITEM} unidades por producto`), { statusCode: 400 });
+        }
+        if (seen.has(productId)) {
+          throw Object.assign(new Error('Producto duplicado en el pedido'), { statusCode: 400 });
+        }
+        seen.add(productId);
+
+        const { rows } = await client.query(
+          'SELECT id, reference, description, price_wholesale FROM products WHERE id = $1',
+          [productId]
+        );
+        const product = rows[0];
+        if (!product) {
+          throw Object.assign(new Error('Producto no encontrado'), { statusCode: 404 });
+        }
+
+        const unitPrice = Number(product.price_wholesale);
+        const lineTotal = unitPrice * quantity;
+        subtotal += lineTotal;
+        lineItems.push({ product, quantity, unitPrice, lineTotal });
+      }
+
+      let discountAmount = 0;
+      if (discount === 'percent') {
+        discountAmount = Math.min(subtotal, Math.round((subtotal * discountValueNum) / 100));
+      } else if (discount === 'amount') {
+        discountAmount = Math.min(subtotal, Math.round(discountValueNum * 100) / 100);
+      }
+      const total = Math.max(0, subtotal - discountAmount);
+
+      await client.query('DELETE FROM order_items WHERE order_id = $1', [orderId]);
+      for (const line of lineItems) {
+        await client.query(
+          `INSERT INTO order_items (
+            order_id, product_id, product_reference, product_description,
+            quantity, unit_price, line_total
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            orderId,
+            line.product.id,
+            line.product.reference,
+            line.product.description,
+            line.quantity,
+            line.unitPrice,
+            line.lineTotal,
+          ]
+        );
+      }
+
+      const { rows: updatedRows } = await client.query(
+        `UPDATE orders
+         SET customer_name = $1, total = $2, discount_type = $3, discount_value = $4,
+             discount_amount = $5, notes = $6, updated_at = NOW()
+         WHERE id = $7
+         RETURNING *`,
+        [customerName.trim(), total, discount, discountValueNum, discountAmount, String(notes || '').trim(), orderId]
+      );
+
+      const { rows: itemRows } = await client.query(
+        'SELECT * FROM order_items WHERE order_id = $1 ORDER BY id',
+        [orderId]
+      );
+
+      return { ...updatedRows[0], items: itemRows };
+    });
+
+    return {
+      id: order.id,
+      customerName: order.customer_name,
+      status: order.status,
+      subtotal: Number(order.total) + Number(order.discount_amount),
+      discountType: order.discount_type,
+      discountValue: Number(order.discount_value),
+      discountAmount: Number(order.discount_amount),
+      notes: order.notes || '',
+      total: Number(order.total),
+      createdAt: order.created_at,
+      items: order.items.map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        reference: item.product_reference,
+        description: item.product_description,
+        quantity: item.quantity,
+        unitPrice: Number(item.unit_price),
+        lineTotal: Number(item.line_total),
+      })),
+    };
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    return reply.code(statusCode).send({ error: error.message || 'Error al editar el pedido' });
+  }
+});
+
 app.get('/api/orders', { preHandler: authHook }, async (request) => {
   const { status } = request.query;
   const params = [];
@@ -528,6 +683,7 @@ app.get('/api/orders', { preHandler: authHook }, async (request) => {
       deliveredAt: order.delivered_at,
       items: items.map((item) => ({
         id: item.id,
+        productId: item.product_id,
         reference: item.product_reference,
         description: item.product_description,
         quantity: item.quantity,
@@ -562,11 +718,11 @@ app.get('/api/orders/:id/invoice', async (request, reply) => {
     const pdf = await buildInvoicePdf(order, items);
     return reply
       .type('application/pdf')
-      .header('Content-Disposition', `attachment; filename="factura-SMG-${orderId}.pdf"`)
+      .header('Content-Disposition', `attachment; filename="presupuesto-SMG-${orderId}.pdf"`)
       .send(pdf);
   } catch (error) {
     app.log.error(error);
-    return reply.code(500).send({ error: 'Error al generar la factura' });
+    return reply.code(500).send({ error: 'Error al generar el presupuesto' });
   }
 });
 
@@ -657,6 +813,86 @@ app.patch('/api/orders/:id/cancel', { preHandler: authHook }, async (request, re
   } catch (error) {
     const statusCode = error.statusCode || 500;
     return reply.code(statusCode).send({ error: error.message || 'Error al cancelar pedido' });
+  }
+});
+
+// Restablecer un pedido cancelado para retomarlo (vuelve a Pendiente).
+app.patch('/api/orders/:id/restore', { preHandler: authHook }, async (request, reply) => {
+  const orderId = Number(request.params.id);
+
+  try {
+    const order = await withTransaction(async (client) => {
+      const { rows } = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+      const current = rows[0];
+
+      if (!current) {
+        throw Object.assign(new Error('Pedido no encontrado'), { statusCode: 404 });
+      }
+
+      if (current.status !== 'cancelled') {
+        throw Object.assign(new Error('Solo se pueden restablecer pedidos cancelados'), { statusCode: 400 });
+      }
+
+      const { rows: updatedRows } = await client.query(
+        `UPDATE orders SET status = 'pending' WHERE id = $1 RETURNING *`,
+        [orderId]
+      );
+
+      return updatedRows[0];
+    });
+
+    return { id: order.id, status: order.status };
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    return reply.code(statusCode).send({ error: error.message || 'Error al restablecer pedido' });
+  }
+});
+
+// Reabrir un pedido entregado: vuelve a Pendiente y devuelve el stock
+// descontado al depósito "viaje". Si se vuelve a entregar, el stock se
+// descuenta de nuevo (stock_applied vuelve a FALSE).
+app.patch('/api/orders/:id/reopen', { preHandler: authHook }, async (request, reply) => {
+  const orderId = Number(request.params.id);
+
+  try {
+    const order = await withTransaction(async (client) => {
+      const { rows } = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [orderId]);
+      const current = rows[0];
+
+      if (!current) {
+        throw Object.assign(new Error('Pedido no encontrado'), { statusCode: 404 });
+      }
+
+      if (current.status !== 'delivered') {
+        throw Object.assign(new Error('Solo se pueden reabrir pedidos entregados'), { statusCode: 400 });
+      }
+
+      if (current.stock_applied) {
+        const { rows: items } = await client.query(
+          'SELECT * FROM order_items WHERE order_id = $1',
+          [orderId]
+        );
+        for (const item of items) {
+          await client.query(
+            'UPDATE products SET stock = stock + $1, updated_at = NOW() WHERE id = $2',
+            [item.quantity, item.product_id]
+          );
+        }
+      }
+
+      const { rows: updatedRows } = await client.query(
+        `UPDATE orders SET status = 'pending', stock_applied = FALSE, delivered_at = NULL
+         WHERE id = $1 RETURNING *`,
+        [orderId]
+      );
+
+      return updatedRows[0];
+    });
+
+    return { id: order.id, status: order.status, stockApplied: order.stock_applied };
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    return reply.code(statusCode).send({ error: error.message || 'Error al reabrir pedido' });
   }
 });
 
@@ -898,6 +1134,65 @@ app.put('/api/admin/products/:id', { preHandler: authHook }, async (request, rep
   );
 
   return formatProduct(full[0]);
+});
+
+// Guardado masivo: actualiza todos los productos modificados en una sola
+// transacción (botón "Guardar todos los cambios" del panel admin).
+app.put('/api/admin/products/bulk', { preHandler: authHook }, async (request, reply) => {
+  const products = request.body?.products;
+  if (!Array.isArray(products) || products.length === 0) {
+    return reply.code(400).send({ error: 'No hay productos para guardar' });
+  }
+
+  try {
+    let updated = 0;
+    await withTransaction(async (client) => {
+      for (const product of products) {
+        const id = Number(product.id);
+        if (!id) {
+          throw Object.assign(new Error('Producto con id inválido'), { statusCode: 400 });
+        }
+
+        const stock = product.stock != null ? Number(product.stock) : null;
+        const stockCasa = product.stockCasa != null ? Number(product.stockCasa) : null;
+        const priceWholesale = product.priceWholesale != null ? Number(product.priceWholesale) : null;
+
+        for (const value of [stock, stockCasa, priceWholesale]) {
+          if (value !== null && (!Number.isFinite(value) || value < 0)) {
+            throw Object.assign(
+              new Error('Stock y precios no pueden ser negativos'),
+              { statusCode: 400 }
+            );
+          }
+        }
+
+        const { rowCount } = await client.query(
+          `UPDATE products SET
+            description = COALESCE($2, description),
+            stock = COALESCE($3, stock),
+            stock_casa = COALESCE($4, stock_casa),
+            price_wholesale = COALESCE($5, price_wholesale),
+            active = COALESCE($6, active),
+            updated_at = NOW()
+           WHERE id = $1`,
+          [
+            id,
+            product.description != null ? String(product.description) : null,
+            stock,
+            stockCasa,
+            priceWholesale,
+            product.active != null ? Boolean(product.active) : null,
+          ]
+        );
+        updated += rowCount;
+      }
+    });
+
+    return { updated };
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    return reply.code(statusCode).send({ error: error.message || 'Error al guardar productos' });
+  }
 });
 
 app.post('/api/admin/products/:id/transfer', { preHandler: authHook }, async (request, reply) => {

@@ -49,7 +49,7 @@ export function formatMoney(value) {
   }).format(value);
 }
 
-export const MAX_QTY = 50;
+export const MAX_QTY = 1000;
 
 export function invoiceUrl(orderId) {
   return `${getApiBase()}/api/orders/${orderId}/invoice`;

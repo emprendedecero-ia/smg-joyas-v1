@@ -30,10 +30,12 @@ Al iniciar, la API importa automáticamente `precios.xlsx` si la base está vac�
 
 ## Flujo de pedidos
 
-1. El cliente arma el carrito (máx. **50 unidades por producto**).
+1. El cliente arma el carrito (máx. **1000 unidades por producto**).
 2. Ingresa su **nombre** antes de confirmar.
-3. Se guarda el pedido en la base y se abre WhatsApp con el detalle.
-4. En **Admin → Pedidos**, al marcar **Entregado** se descuenta el stock.
+3. Se guarda el pedido en la base y se abre WhatsApp con el detalle (PDF de **presupuesto**).
+4. En **Admin → Pedidos** se puede **editar** un pendiente, **restablecer** un
+   cancelado o **volver a Pendiente** un entregado (el stock se devuelve y se
+   vuelve a descontar al reentregar). Al marcar **Entregado** se descuenta el stock.
 
 Los precios visibles en el catálogo son **mayoristas**.
 

@@ -24,7 +24,7 @@ export function CartProvider({ children }) {
 
   const value = useMemo(() => {
     const addItem = (product, quantity = 1) => {
-      const qty = Math.min(MAX_QTY, Math.max(1, quantity));
+      const qty = Math.min(MAX_QTY, Math.max(1, Math.floor(quantity)));
       setItems((current) => {
         const existing = current.find((item) => item.productId === product.id);
         if (existing) {
@@ -48,7 +48,7 @@ export function CartProvider({ children }) {
     };
 
     const updateQuantity = (productId, quantity) => {
-      const qty = Math.min(MAX_QTY, Math.max(1, quantity));
+      const qty = Math.min(MAX_QTY, Math.max(1, Math.floor(quantity)));
       setItems((current) =>
         current.map((item) =>
           item.productId === productId ? { ...item, quantity: qty } : item

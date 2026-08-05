@@ -1,9 +1,13 @@
 "use client";
 
-import { assetUrl, formatMoney } from "@/lib/api";
+import { useState } from "react";
+import { assetUrl, formatMoney, MAX_QTY } from "@/lib/api";
 
 export default function ProductModal({ product, onClose, onAdd }) {
+  const [qty, setQty] = useState(1);
   if (!product) return null;
+
+  const clampQty = (value) => Math.min(MAX_QTY, Math.max(1, Math.floor(value)));
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -36,26 +40,44 @@ export default function ProductModal({ product, onClose, onAdd }) {
             <div className="precio">
               Mayorista: {formatMoney(product.priceWholesale)}
             </div>
-            {product.priceRetail > 0 && (
-              <div className="meta">
-                Minorista: {formatMoney(product.priceRetail)}
-              </div>
-            )}
-            {product.priceMl > 0 && (
-              <div className="meta">
-                MercadoLibre: {formatMoney(product.priceMl)}
-              </div>
-            )}
+            <div className="stepper product-stepper">
+              <button
+                type="button"
+                className="stepper-btn"
+                onClick={() => setQty((q) => clampQty(q - 1))}
+                aria-label="Restar unidad"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                className="stepper-input"
+                min="1"
+                max={MAX_QTY}
+                step="1"
+                value={qty}
+                onChange={(event) => setQty(clampQty(Number(event.target.value) || 1))}
+                aria-label={`Cantidad de ${product.reference}`}
+              />
+              <button
+                type="button"
+                className="stepper-btn"
+                onClick={() => setQty((q) => clampQty(q + 1))}
+                aria-label="Sumar unidad"
+              >
+                +
+              </button>
+            </div>
             <button
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                onAdd(product, 1);
+                onAdd(product, qty);
                 onClose();
               }}
               disabled={product.stock < 1}
             >
-              Agregar al carrito
+              Agregar al carrito ({qty})
             </button>
           </div>
         </div>

@@ -556,6 +556,107 @@ button {
   font-size: 0.88rem;
 }
 
+/* --- Selector de cantidad (stepper) --- */
+
+.stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 0.7rem;
+  animation: modalIn 0.2s var(--ease);
+}
+
+.stepper-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+.stepper-btn {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--gold-dark);
+  font-size: 1.05rem;
+  line-height: 1;
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease), color 0.2s var(--ease), transform 0.15s var(--ease);
+}
+
+.stepper-btn:hover {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.stepper-btn:active {
+  transform: scale(0.92);
+}
+
+.stepper-cancel {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease);
+}
+
+.stepper-cancel:hover {
+  background: #f3ecdf;
+  color: var(--ink-soft);
+}
+
+.stepper-input {
+  width: 52px;
+  padding: 0.4rem 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbf8f1;
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.92rem;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.stepper-input:focus {
+  outline: none;
+  border-color: var(--gold);
+  background: var(--surface);
+  box-shadow: 0 0 0 4px rgba(185, 138, 47, 0.14);
+}
+
+.stepper .stepper-confirm {
+  width: 100%;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.88rem;
+}
+
+/* En el modal de producto el stepper va en una sola línea */
+.product-stepper {
+  flex-direction: row;
+  justify-content: flex-start;
+  margin: 0.2rem 0 0;
+  padding: 0;
+}
+
+.product-stepper .stepper-input {
+  width: 64px;
+}
+
 /* ============================================================
    Carrito (botón header)
    ============================================================ */
@@ -1363,6 +1464,141 @@ button {
   margin-bottom: 1.1rem;
 }
 
+/* --- Admin: guardado masivo de productos --- */
+
+.save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fbf6ea;
+  border: 1px solid var(--gold-soft);
+  border-radius: var(--radius-sm);
+  animation: modalIn 0.25s var(--ease);
+}
+
+.save-bar > span {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--gold-dark);
+}
+
+.save-bar-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.save-bar .btn {
+  padding: 0.5rem 1.05rem;
+  font-size: 0.85rem;
+}
+
+tbody tr.dirty-row {
+  background: #fdf6e3;
+}
+
+tbody tr.dirty-row:hover {
+  background: #fbf1d8;
+}
+
+tbody tr.dirty-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--gold);
+}
+
+/* --- Admin: modal de edición de pedidos --- */
+
+.edit-modal {
+  width: min(760px, 100%);
+}
+
+.edit-items {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.8rem 0 0.2rem;
+}
+
+.edit-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.7rem;
+  align-items: center;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: #fdfbf7;
+}
+
+.edit-item .ref {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.edit-item .desc {
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.edit-item > div > div:last-child {
+  font-size: 0.84rem;
+  color: var(--gold-dark);
+}
+
+.edit-item input[type="number"] {
+  width: 68px;
+  padding: 0.42rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbf8f1;
+  text-align: center;
+}
+
+.edit-item input[type="number"]:focus {
+  outline: none;
+  border-color: var(--gold);
+  background: var(--surface);
+}
+
+.edit-item .btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.edit-add-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 0.6rem;
+}
+
+.edit-add-row select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.edit-add-row select:focus {
+  outline: none;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 4px rgba(185, 138, 47, 0.14);
+}
+
+.edit-add-row .btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1584,5 +1820,14 @@ td input:focus {
 
   .admin-nav {
     padding: 0.7rem 0;
+  }
+
+  .edit-item {
+    grid-template-columns: 1fr auto;
+  }
+
+  .edit-item .btn {
+    grid-column: 1 / -1;
+    justify-self: end;
   }
 }

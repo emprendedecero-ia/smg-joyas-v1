@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchJson, formatMoney, invoiceUrl } from "@/lib/api";
+import { fetchJson, formatMoney, invoiceUrl, MAX_QTY } from "@/lib/api";
 
 const TOKEN_KEY = "smg-admin-token";
 
@@ -162,6 +162,8 @@ function ProductsPanel() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [importing, setImporting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(new Set()); // ids con cambios sin guardar
   const [transferProduct, setTransferProduct] = useState(null);
 
   const load = async () => {
@@ -172,6 +174,9 @@ function ProductsPanel() {
     }
   };
 
+  const markDirty = (id) => setDirty((current) => new Set(current).add(id));
+  const clearDirty = () => setDirty(new Set());
+
   const importExcel = async () => {
     setImporting(true);
     setError("");
@@ -179,6 +184,7 @@ function ProductsPanel() {
     try {
       const result = await authFetch("/api/admin/import-excel", { method: "POST" });
       setMessage(`Excel importado: ${result.imported} productos actualizados.`);
+      clearDirty();
       await load();
     } catch (err) {
       setError(err.message);
@@ -191,22 +197,41 @@ function ProductsPanel() {
     load();
   }, []);
 
-  const save = async (product) => {
+  const saveAll = async () => {
+    const toSave = products.filter((product) => dirty.has(product.id));
+    if (toSave.length === 0) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
     try {
-      await authFetch(`/api/admin/products/${product.id}`, {
+      const result = await authFetch("/api/admin/products/bulk", {
         method: "PUT",
         body: JSON.stringify({
-          description: product.description,
-          stock: Number(product.stock),
-          stockCasa: Number(product.stockCasa),
-          priceWholesale: Number(product.priceWholesale),
-          active: product.active,
+          products: toSave.map((product) => ({
+            id: product.id,
+            description: product.description,
+            stock: Number(product.stock),
+            stockCasa: Number(product.stockCasa),
+            priceWholesale: Number(product.priceWholesale),
+            active: product.active,
+          })),
         }),
       });
+      setMessage(`Cambios guardados: ${result.updated} productos actualizados.`);
+      clearDirty();
       await load();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSaving(false);
     }
+  };
+
+  const discardChanges = async () => {
+    clearDirty();
+    setMessage("");
+    setError("");
+    await load();
   };
 
   const filtered = products.filter((product) => {
@@ -242,6 +267,19 @@ function ProductsPanel() {
           {filtered.length} de {products.length} productos
         </span>
       </div>
+      {dirty.size > 0 && (
+        <div className="save-bar">
+          <span>🖊️ {dirty.size} producto{dirty.size === 1 ? "" : "s"} modificado{dirty.size === 1 ? "" : "s"} sin guardar</span>
+          <div className="save-bar-actions">
+            <button className="btn btn-ghost" onClick={discardChanges} disabled={saving}>
+              Descartar
+            </button>
+            <button className="btn btn-primary" onClick={saveAll} disabled={saving}>
+              {saving ? "Guardando..." : `Guardar todos los cambios (${dirty.size})`}
+            </button>
+          </div>
+        </div>
+      )}
       <div className="table-wrap">
         <table>
           <thead>
@@ -252,7 +290,7 @@ function ProductsPanel() {
               <th>Stock casa</th>
               <th>Precio mayorista</th>
               <th>Activo</th>
-              <th></th>
+              <th>Acciones</th>
             </tr>
           </thead>
           <tbody>
@@ -262,20 +300,21 @@ function ProductsPanel() {
               </tr>
             ) : null}
             {filtered.map((product) => (
-              <tr key={product.id}>
+              <tr key={product.id} className={dirty.has(product.id) ? "dirty-row" : ""}>
                 <td>{product.reference}</td>
                 <td>
                   <input
                     value={product.description}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      markDirty(product.id);
                       setProducts((rows) =>
                         rows.map((row) =>
                           row.id === product.id
                             ? { ...row, description: event.target.value }
                             : row
                         )
-                      )
-                    }
+                      );
+                    }}
                   />
                 </td>
                 <td>
@@ -284,15 +323,16 @@ function ProductsPanel() {
                       type="number"
                       min="0"
                       value={product.stock}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        markDirty(product.id);
                         setProducts((rows) =>
                           rows.map((row) =>
                             row.id === product.id
                               ? { ...row, stock: event.target.value }
                               : row
                           )
-                        )
-                      }
+                        );
+                      }}
                       style={{ width: "72px" }}
                     />
                     {product.stock <= 0 && (
@@ -305,15 +345,16 @@ function ProductsPanel() {
                     type="number"
                     min="0"
                     value={product.stockCasa}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      markDirty(product.id);
                       setProducts((rows) =>
                         rows.map((row) =>
                           row.id === product.id
                             ? { ...row, stockCasa: event.target.value }
                             : row
                         )
-                      )
-                    }
+                      );
+                    }}
                     style={{ width: "72px" }}
                   />
                 </td>
@@ -322,15 +363,16 @@ function ProductsPanel() {
                     type="number"
                     min="0"
                     value={product.priceWholesale}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      markDirty(product.id);
                       setProducts((rows) =>
                         rows.map((row) =>
                           row.id === product.id
                             ? { ...row, priceWholesale: event.target.value }
                             : row
                         )
-                      )
-                    }
+                      );
+                    }}
                     style={{ width: "110px" }}
                   />
                 </td>
@@ -338,26 +380,22 @@ function ProductsPanel() {
                   <input
                     type="checkbox"
                     checked={product.active}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      markDirty(product.id);
                       setProducts((rows) =>
                         rows.map((row) =>
                           row.id === product.id
                             ? { ...row, active: event.target.checked }
                             : row
                         )
-                      )
-                    }
+                      );
+                    }}
                   />
                 </td>
                 <td>
-                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <button className="btn btn-outline" onClick={() => setTransferProduct(product)}>
-                      Trasladar
-                    </button>
-                    <button className="btn btn-primary" onClick={() => save(product)}>
-                      Guardar
-                    </button>
-                  </div>
+                  <button className="btn btn-outline" onClick={() => setTransferProduct(product)}>
+                    Trasladar
+                  </button>
                 </td>
               </tr>
             ))}
@@ -380,10 +418,305 @@ function ProductsPanel() {
   );
 }
 
+const STATUS_LABELS = {
+  pending: "Pendiente",
+  delivered: "Entregado",
+  cancelled: "Cancelado",
+};
+
+function OrderEditModal({ order, onClose, onSaved }) {
+  const [products, setProducts] = useState([]);
+  const [customerName, setCustomerName] = useState(order.customerName);
+  const [items, setItems] = useState([]);
+  const [discountMode, setDiscountMode] = useState(order.discountType || "none");
+  const [discountValue, setDiscountValue] = useState(order.discountValue || "");
+  const [notes, setNotes] = useState(order.notes || "");
+  const [addProductId, setAddProductId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const catalog = await authFetch("/api/admin/products");
+        if (cancelled) return;
+        // Se muestran los precios mayoristas vigentes; si el producto ya no
+        // existe, se conserva el precio que tenía el pedido.
+        const priceFor = (orderItem) => {
+          const product = catalog.find((p) => p.id === orderItem.productId);
+          return product ? Number(product.priceWholesale) : Number(orderItem.unitPrice);
+        };
+        setProducts(catalog);
+        setItems(
+          order.items.map((item) => ({
+            productId: item.productId,
+            reference: item.reference,
+            description: item.description,
+            quantity: item.quantity,
+            unitPrice: priceFor(item),
+          }))
+        );
+      } catch (err) {
+        setError(err.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.id]);
+
+  const parsedDiscount = Number(discountValue);
+  const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  const discountAmount =
+    discountMode === "percent" && parsedDiscount > 0
+      ? Math.min(subtotal, Math.round((subtotal * parsedDiscount) / 100))
+      : discountMode === "amount" && parsedDiscount > 0
+      ? Math.min(subtotal, Math.round(parsedDiscount * 100) / 100)
+      : 0;
+  const total = Math.max(0, subtotal - discountAmount);
+
+  const changeQuantity = (productId, quantity) =>
+    setItems((current) =>
+      current.map((item) =>
+        item.productId === productId
+          ? { ...item, quantity: Math.min(MAX_QTY, Math.max(1, Math.floor(Number(quantity) || 1))) }
+          : item
+      )
+    );
+
+  const removeItem = (productId) =>
+    setItems((current) => current.filter((item) => item.productId !== productId));
+
+  const addProduct = () => {
+    const product = products.find((p) => p.id === Number(addProductId));
+    if (!product) return;
+    setItems((current) => {
+      const existing = current.find((item) => item.productId === product.id);
+      if (existing) {
+        return current.map((item) =>
+          item.productId === product.id
+            ? { ...item, quantity: Math.min(MAX_QTY, item.quantity + 1) }
+            : item
+        );
+      }
+      return [
+        ...current,
+        {
+          productId: product.id,
+          reference: product.reference,
+          description: product.description,
+          quantity: 1,
+          unitPrice: Number(product.priceWholesale),
+        },
+      ];
+    });
+    setAddProductId("");
+  };
+
+  const save = async () => {
+    setError("");
+    if (!customerName.trim()) {
+      setError("El nombre del cliente es obligatorio.");
+      return;
+    }
+    if (items.length === 0) {
+      setError("El pedido debe tener al menos un producto.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await authFetch(`/api/orders/${order.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          customerName: customerName.trim(),
+          items: items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
+          discountType: discountMode === "none" ? null : discountMode,
+          discountValue: discountMode === "none" ? 0 : parsedDiscount || 0,
+          notes: notes.trim(),
+        }),
+      });
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal edit-modal" onClick={(event) => event.stopPropagation()}>
+        <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">
+          ×
+        </button>
+        <h2>Editar pedido #{order.id}</h2>
+        <p className="transfer-product">
+          Los precios se recalculan con el precio mayorista vigente de cada producto.
+        </p>
+        {error && <p className="form-error">{error}</p>}
+        <div className="form-grid">
+          <label>
+            Cliente (nombre y apellido)
+            <input
+              name="customerName"
+              value={customerName}
+              onChange={(event) => setCustomerName(event.target.value)}
+              placeholder="Ej: María López"
+            />
+          </label>
+        </div>
+
+        <div className="edit-items">
+          {items.map((item) => (
+            <div className="edit-item" key={item.productId}>
+              <div>
+                <div className="ref">{item.reference}</div>
+                <div className="desc">{item.description}</div>
+                <div>{formatMoney(item.unitPrice)} c/u</div>
+              </div>
+              <input
+                type="number"
+                name="quantity"
+                min="1"
+                max={MAX_QTY}
+                step="1"
+                value={item.quantity}
+                onChange={(event) => changeQuantity(item.productId, event.target.value)}
+                aria-label={`Cantidad de ${item.reference}`}
+              />
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => removeItem(item.productId)}
+              >
+                Quitar
+              </button>
+            </div>
+          ))}
+          {items.length === 0 && <p className="muted-cell">Sin productos. Agregá al menos uno.</p>}
+        </div>
+
+        <div className="edit-add-row">
+          <select
+            value={addProductId}
+            onChange={(event) => setAddProductId(event.target.value)}
+            aria-label="Agregar producto al pedido"
+          >
+            <option value="">Agregar producto...</option>
+            {products
+              .filter((product) => !items.some((item) => item.productId === product.id))
+              .map((product) => (
+                <option key={product.id} value={product.id}>
+                  {product.reference} — {product.description}
+                </option>
+              ))}
+          </select>
+          <button type="button" className="btn btn-outline" onClick={addProduct} disabled={!addProductId}>
+            Agregar
+          </button>
+        </div>
+
+        <div className="discount-box" style={{ marginTop: "0.9rem" }}>
+          <span className="discount-box-label">Descuento sobre el total</span>
+          <div className="discount-control">
+            <div className="discount-modes">
+              <button
+                type="button"
+                className={`mode-chip ${discountMode === "none" ? "active" : ""}`}
+                onClick={() => {
+                  setDiscountMode("none");
+                  setDiscountValue("");
+                }}
+              >
+                Sin
+              </button>
+              <button
+                type="button"
+                className={`mode-chip ${discountMode === "percent" ? "active" : ""}`}
+                onClick={() => setDiscountMode("percent")}
+              >
+                %
+              </button>
+              <button
+                type="button"
+                className={`mode-chip ${discountMode === "amount" ? "active" : ""}`}
+                onClick={() => setDiscountMode("amount")}
+              >
+                $
+              </button>
+            </div>
+            <input
+              type="number"
+              name="discount"
+              min="0"
+              step={discountMode === "percent" ? "1" : "0.01"}
+              inputMode="decimal"
+              placeholder={discountMode === "percent" ? "10" : "0"}
+              value={discountValue}
+              onChange={(event) => setDiscountValue(event.target.value)}
+              disabled={discountMode === "none"}
+              aria-label="Valor del descuento"
+            />
+          </div>
+          {discountAmount > 0 && (
+            <p className="discount-summary">
+              Se descuentan <strong>{formatMoney(discountAmount)}</strong>
+              {discountMode === "percent" ? ` (${parsedDiscount}%)` : ""}
+            </p>
+          )}
+        </div>
+
+        <div className="form-grid" style={{ marginTop: "0.9rem" }}>
+          <label>
+            Observación / comentario
+            <textarea
+              name="notes"
+              rows="2"
+              maxLength="300"
+              placeholder="Ej: Entrega el jueves por la mañana, abonó en efectivo..."
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="cart-totals" style={{ marginTop: "1rem" }}>
+          <div className="cart-line">
+            <span>Subtotal</span>
+            <span>{formatMoney(subtotal)}</span>
+          </div>
+          {discountAmount > 0 && (
+            <div className="cart-line discount">
+              <span>Descuento</span>
+              <span>− {formatMoney(discountAmount)}</span>
+            </div>
+          )}
+          <div className="cart-total">
+            <span>Total</span>
+            <span>{formatMoney(total)}</span>
+          </div>
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" className="btn btn-outline" onClick={onClose}>
+            Cancelar
+          </button>
+          <button type="button" className="btn btn-primary" disabled={loading} onClick={save}>
+            {loading ? "Guardando..." : "Guardar cambios"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OrdersPanel() {
   const [orders, setOrders] = useState([]);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
+  const [editingOrder, setEditingOrder] = useState(null);
 
   const load = async () => {
     try {
@@ -420,13 +753,13 @@ function OrdersPanel() {
     try {
       const response = await fetch(invoiceUrl(id));
       if (!response.ok) {
-        throw new Error("No se pudo generar la factura");
+        throw new Error("No se pudo generar el presupuesto");
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `factura-SMG-${id}.pdf`;
+      link.download = `presupuesto-SMG-${id}.pdf`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -436,11 +769,29 @@ function OrdersPanel() {
     }
   };
 
+  const restore = async (id) => {
+    try {
+      await authFetch(`/api/orders/${id}/restore`, { method: "PATCH" });
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const reopen = async (id) => {
+    try {
+      await authFetch(`/api/orders/${id}/reopen`, { method: "PATCH" });
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const exportCsv = () => {
     const rows = orders.map((order) => [
       order.id,
       order.customerName,
-      order.status,
+      STATUS_LABELS[order.status] || order.status,
       order.subtotal,
       order.discountAmount,
       order.total,
@@ -497,7 +848,7 @@ function OrdersPanel() {
                 <td>{order.id}</td>
                 <td>{order.customerName}</td>
                 <td>
-                  <span className={`status ${order.status}`}>{order.status}</span>
+                  <span className={`status ${order.status}`}>{STATUS_LABELS[order.status] || order.status}</span>
                 </td>
                 <td>{formatMoney(order.subtotal)}</td>
                 <td>
@@ -524,10 +875,13 @@ function OrdersPanel() {
                 <td>
                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                     <button className="btn btn-outline" onClick={() => downloadInvoice(order.id)}>
-                      Factura
+                      Presupuesto
                     </button>
                     {order.status === "pending" && (
                       <>
+                        <button className="btn btn-outline" onClick={() => setEditingOrder(order)}>
+                          Editar
+                        </button>
                         <button className="btn btn-primary" onClick={() => deliver(order.id)}>
                           Entregado
                         </button>
@@ -536,6 +890,16 @@ function OrdersPanel() {
                         </button>
                       </>
                     )}
+                    {order.status === "cancelled" && (
+                      <button className="btn btn-outline" onClick={() => restore(order.id)}>
+                        Restablecer
+                      </button>
+                    )}
+                    {order.status === "delivered" && (
+                      <button className="btn btn-outline" onClick={() => reopen(order.id)}>
+                        Volver a Pendiente
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -543,6 +907,17 @@ function OrdersPanel() {
           </tbody>
         </table>
       </div>
+
+      {editingOrder && (
+        <OrderEditModal
+          order={editingOrder}
+          onClose={() => setEditingOrder(null)}
+          onSaved={async () => {
+            setEditingOrder(null);
+            await load();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -875,10 +1250,18 @@ export default function AdminPage() {
           Salir
         </button>
       </nav>
+      {/* Los paneles quedan montados (ocultos con CSS) para no perder ediciones
+          sin guardar al cambiar de pestaña, por ejemplo en Productos. */}
       <div className="container">
-        {tab === "orders" && <OrdersPanel />}
-        {tab === "products" && <ProductsPanel />}
-        {tab === "reports" && <ReportsPanel />}
+        <div hidden={tab !== "orders"}>
+          <OrdersPanel />
+        </div>
+        <div hidden={tab !== "products"}>
+          <ProductsPanel />
+        </div>
+        <div hidden={tab !== "reports"}>
+          <ReportsPanel />
+        </div>
       </div>
     </div>
   );
