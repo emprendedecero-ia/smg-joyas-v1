@@ -36,8 +36,12 @@ function downloadCsv(filename, rows) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  // Revocar con un pequeño retraso: revocar al instante puede cancelar la
+  // descarga en algunos navegadores (Chrome/Safari) sin mostrar error.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 function LoginForm({ onSuccess }) {
@@ -402,35 +406,32 @@ function ProductsPanel() {
   const clearDirty = () => setDirty(new Set());
 
   // Descarga el catálogo completo como Excel editable (cambios masivos).
-  const exportXlsx = async () => {
+  // Usa la descarga NATIVA del navegador (link directo al endpoint con el
+  // token por query): el servidor manda Content-Disposition: attachment, así
+  // el navegador baja el archivo solo. Es lo más confiable en PC y celulares;
+  // no depende de blob URLs (que algunos navegadores bloquean silenciosamente).
+  const exportXlsx = () => {
     setError("");
-    try {
-      const response = await fetch(`${getApiBase()}/api/admin/products/export`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || "No se pudo generar el Excel");
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      // Fecha de Buenos Aires en el nombre, igual que en el servidor.
-      const baParts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "America/Argentina/Buenos_Aires",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).formatToParts(new Date());
-      const get = (type) => baParts.find((part) => part.type === type).value;
-      link.download = `productos-${get("year")}-${get("month")}-${get("day")}.xlsx`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err.message);
+    setMessage("");
+    const token = getToken();
+    if (!token) {
+      setError("Sesión expirada. Volvé a iniciar sesión.");
+      return;
     }
+    const baParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const get = (part) => baParts.find((item) => item.type === part).value;
+    const link = document.createElement("a");
+    link.href = `${getApiBase()}/api/admin/products/export?token=${encodeURIComponent(token)}`;
+    link.download = `productos-${get("year")}-${get("month")}-${get("day")}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setMessage("Descargando el Excel con los productos… si no aparece, revisá que el navegador permita descargas.");
   };
 
   // Aplica los cambios masivos de un Excel subido (editado a partir del export).
@@ -1374,24 +1375,17 @@ function OrdersPanel({ onChange }) {
     }
   };
 
-  const downloadInvoice = async (id) => {
-    try {
-      const response = await fetch(invoiceUrl(id));
-      if (!response.ok) {
-        throw new Error("No se pudo generar el presupuesto");
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `presupuesto-SMG-${id}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err.message);
-    }
+  // Descarga NATIVA del navegador: el endpoint de presupuesto es público y
+  // manda Content-Disposition: attachment, así el PDF baja solo (mismo fix que
+  // el export de Excel; fetch+blob se bloquea silenciosamente en algunos
+  // navegadores).
+  const downloadInvoice = (id) => {
+    const link = document.createElement("a");
+    link.href = invoiceUrl(id);
+    link.download = `presupuesto-SMG-${id}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   };
 
   const restore = async (id) => {

@@ -18,7 +18,6 @@ export default function CartDrawer({ onClose }) {
   const [discountValue, setDiscountValue] = useState("");
   const [step, setStep] = useState("cart");
   const [loading, setLoading] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [order, setOrder] = useState(null);
   const bodyRef = useRef(null);
@@ -87,28 +86,18 @@ export default function CartDrawer({ onClose }) {
     }
   };
 
-  const downloadInvoice = async () => {
+  // Descarga NATIVA del navegador: el endpoint de presupuesto es público y
+  // manda Content-Disposition: attachment, así el PDF baja solo (mismo fix que
+  // el export de Excel; fetch+blob se bloquea silenciosamente en algunos
+  // navegadores).
+  const downloadInvoice = () => {
     if (!order) return;
-    setDownloading(true);
-    try {
-      const response = await fetch(invoiceUrl(order.id));
-      if (!response.ok) {
-        throw new Error("No se pudo generar el presupuesto");
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `presupuesto-SMG-${order.id}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDownloading(false);
-    }
+    const link = document.createElement("a");
+    link.href = invoiceUrl(order.id);
+    link.download = `presupuesto-SMG-${order.id}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   };
 
   const openWhatsApp = () => {
@@ -390,8 +379,8 @@ export default function CartDrawer({ onClose }) {
                   <button className="btn btn-outline" onClick={openWhatsApp}>
                     WhatsApp
                   </button>
-                  <button className="btn btn-primary" disabled={downloading} onClick={downloadInvoice}>
-                    {downloading ? "Generando..." : "Descargar presupuesto PDF"}
+                  <button className="btn btn-primary" onClick={downloadInvoice}>
+                    Descargar presupuesto PDF
                   </button>
                 </div>
                 <p className="invoice-hint">

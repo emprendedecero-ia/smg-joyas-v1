@@ -1533,7 +1533,27 @@ app.post('/api/admin/products/:id/add-stock', { preHandler: authHook }, async (r
 // Exporta todo el catálogo a un Excel editable (cambios masivos de precios,
 // descripciones, stocks...). Las columnas coinciden con las que entiende el
 // import, así el mismo archivo se puede volver a subir actualizado.
-app.get('/api/admin/products/export', { preHandler: authHook }, async (request, reply) => {
+//
+// Autenticación: acepta el Bearer token del header (fetch normal) o el token
+// por query (?token=...). La segunda vía permite usar la descarga nativa del
+// navegador (link directo), que es la más confiable en móviles y no depende
+// de blobs ni de CORS.
+app.get('/api/admin/products/export', async (request, reply) => {
+  const headerToken = (request.headers.authorization || '').startsWith('Bearer ')
+    ? request.headers.authorization.slice(7)
+    : '';
+  const queryToken = String(request.query.token || '');
+  const token = headerToken || queryToken;
+
+  if (!token) {
+    return reply.code(401).send({ error: 'No autorizado' });
+  }
+  try {
+    jwt.verify(token, JWT_SECRET);
+  } catch {
+    return reply.code(401).send({ error: 'Token inválido' });
+  }
+
   try {
     const { rows } = await query(
       `SELECT p.*, c.name AS category_name
@@ -1563,6 +1583,7 @@ app.get('/api/admin/products/export', { preHandler: authHook }, async (request, 
     return reply
       .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
       .header('Content-Disposition', `attachment; filename="productos-${baYmd(new Date())}.xlsx"`)
+      .header('Cache-Control', 'no-store, no-cache, must-revalidate')
       .send(buffer);
   } catch (error) {
     return reply.code(500).send({ error: error.message || 'Error al exportar productos' });
